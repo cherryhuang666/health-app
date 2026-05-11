@@ -881,9 +881,9 @@ function navigate(page, context = {}, navOpts = {}) {
     hm.replaceChildren();
     if (page === 'dashboard') {
       const img = document.createElement('img');
-      img.src = 'icons/pwa-192.png';
+      img.src = 'icons/pwa-192.jpeg';
       img.alt = '';
-      img.className = 'absolute inset-0 h-full w-full object-cover object-center';
+      img.className = 'absolute inset-0 h-full w-full object-cover object-[center_top]';
       img.decoding = 'async';
       hm.appendChild(img);
     } else {
