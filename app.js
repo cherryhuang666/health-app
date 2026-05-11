@@ -877,7 +877,19 @@ function navigate(page, context = {}, navOpts = {}) {
   $('#pageTitle').textContent = meta.title;
   $('#pageSubtitle').textContent = meta.subtitle;
   const hm = document.getElementById('headerMark');
-  if (hm) hm.textContent = meta.icon || '🏠';
+  if (hm) {
+    hm.replaceChildren();
+    if (page === 'dashboard') {
+      const img = document.createElement('img');
+      img.src = 'icons/pwa-192.png';
+      img.alt = '';
+      img.className = 'absolute inset-0 h-full w-full object-cover object-center';
+      img.decoding = 'async';
+      hm.appendChild(img);
+    } else {
+      hm.textContent = meta.icon || '🏠';
+    }
+  }
   const container = $('#pageContainer');
   container.innerHTML = '';
   meta.render(container, context);
