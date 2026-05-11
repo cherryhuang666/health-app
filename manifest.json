@@ -1,0 +1,25 @@
+{
+  "name": "张婷要健康",
+  "short_name": "张婷要健康",
+  "description": "张婷的健康记录与分析：身体状况、疫苗、看诊、保险理赔",
+  "start_url": "./index.html",
+  "display": "standalone",
+  "background_color": "#f8fafc",
+  "theme_color": "#0ea5e9",
+  "lang": "zh-CN",
+  "orientation": "portrait",
+  "icons": [
+    {
+      "src": "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 192 192'%3E%3Crect width='192' height='192' rx='40' fill='%230ea5e9'/%3E%3Ctext x='50%25' y='62%25' font-size='110' text-anchor='middle' dominant-baseline='middle'%3E%F0%9F%A9%BA%3C/text%3E%3C/svg%3E",
+      "sizes": "192x192",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 512 512'%3E%3Crect width='512' height='512' rx='110' fill='%230ea5e9'/%3E%3Ctext x='50%25' y='62%25' font-size='300' text-anchor='middle' dominant-baseline='middle'%3E%F0%9F%A9%BA%3C/text%3E%3C/svg%3E",
+      "sizes": "512x512",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}
