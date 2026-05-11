@@ -233,6 +233,28 @@ function daysBetween(a, b) {
   return Math.round(ms / 86400000);
 }
 
+/**
+ * 使用 Flatpickr 中文语言包绑定日期输入（YYYY-MM-DD），避免系统英文时原生日历仍为英文。
+ * CDN 需在 app.js 前加载 flatpickr + l10n/zh。
+ */
+function attachChineseDatePicker(inputEl, isoValue) {
+  if (!inputEl || typeof flatpickr !== 'function') return;
+  if (inputEl._fp) {
+    try { inputEl._fp.destroy(); } catch (_) {}
+    inputEl._fp = null;
+  }
+  const zh = typeof flatpickr !== 'undefined' && flatpickr.l10ns && flatpickr.l10ns.zh
+    ? flatpickr.l10ns.zh : null;
+  inputEl._fp = flatpickr(inputEl, {
+    locale: zh || undefined,
+    dateFormat: 'Y-m-d',
+    defaultDate: isoValue || undefined,
+    allowInput: true,
+    disableMobile: true,
+    monthSelectorType: 'dropdown',
+  });
+}
+
 function escapeHtml(str) {
   if (str == null) return '';
   return String(str)
@@ -596,6 +618,8 @@ const defaultState = () => ({
   customEncouragements: [],
   /** 首页「医生汇报」可编辑草稿（可自行修改后保存） */
   doctorReportBriefing: '',
+  /** 全应用字号：standard | large | xlarge（随本地存档保存） */
+  uiFontScale: 'standard',
 });
 
 function getAllClinics() {
@@ -645,7 +669,21 @@ function findInsurer(key) {
   return getAllInsurers().find(i => i.key === key) || { key, label: key };
 }
 
+const FONT_SCALE_IDS = ['standard', 'large', 'xlarge'];
+
+function fontScaleShortLabel(fs) {
+  if (fs === 'large') return '大一点';
+  if (fs === 'xlarge') return '再大一点';
+  return '标准';
+}
+
+function applyUiFontScaleFromState() {
+  const p = FONT_SCALE_IDS.includes(state.uiFontScale) ? state.uiFontScale : 'standard';
+  document.documentElement.setAttribute('data-font-scale', p);
+}
+
 let state = loadState();
+applyUiFontScaleFromState();
 
 function loadState() {
   try {
@@ -661,6 +699,34 @@ function loadState() {
 
 function saveState() {
   localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+}
+
+/**
+ * 首次打开且本机尚无存档时，尝试拉取同目录下的 seed-data.json（与「导出 JSON」格式相同），
+ * 用于部署后新手机一打开就有历史数据（不必再手导 Excel）。
+ * 若仓库无此文件或为空，则静默跳过。
+ */
+async function tryApplyBundledSeedIfFresh() {
+  if (localStorage.getItem(STORAGE_KEY)) return false;
+  try {
+    const res = await fetch('./seed-data.json', { cache: 'no-store' });
+    if (!res.ok) return false;
+    const data = await res.json();
+    if (!data || typeof data !== 'object') return false;
+    const merged = { ...defaultState(), ...data };
+    const has =
+      (merged.daily && merged.daily.length > 0) ||
+      (merged.visits && merged.visits.length > 0) ||
+      (merged.vaccines && merged.vaccines.length > 0) ||
+      (merged.claims && merged.claims.length > 0);
+    if (!has) return false;
+    state = merged;
+    saveState();
+    return true;
+  } catch (e) {
+    console.warn('seed-data.json skipped:', e);
+    return false;
+  }
 }
 
 /* ---------- 3b. 每日寄语引擎（种子随机 + 组合拳 + 自建句子） ---------- */
@@ -769,15 +835,15 @@ function getDailyByDate(date) {
 /* ---------- 5. ROUTING ---------- */
 
 const pages = {
-  dashboard:   { title: '张婷要健康！', subtitle: '健康概览',     render: renderDashboard },
-  daily:       { title: '每日记录', subtitle: '身体状况 · 摘要',  render: renderDailyList },
-  dailyEdit:   { title: '记录',     subtitle: '编辑当日',         render: renderDailyEdit },
-  vaccines:    { title: '疫苗',     subtitle: '接种记录',         render: renderVaccines },
-  visits:      { title: '看诊',     subtitle: '各科就诊',         render: renderVisits },
-  claims:      { title: '理赔',     subtitle: '保险报销',         render: renderClaims },
-  analytics:   { title: '分析',     subtitle: '身体状况趋势',     render: renderAnalytics },
-  more:        { title: '更多',     subtitle: '数据 · 设置',      render: renderMore },
-  search:      { title: '搜索',     subtitle: '检索所有记录',     render: renderSearch },
+  dashboard:   { title: '张婷要健康！', subtitle: '健康概览',     icon: '🏠', render: renderDashboard },
+  daily:       { title: '每日记录', subtitle: '身体状况 · 摘要',  icon: '✏️', render: renderDailyList },
+  dailyEdit:   { title: '记录',     subtitle: '编辑当日',         icon: '✏️', render: renderDailyEdit },
+  vaccines:    { title: '疫苗',     subtitle: '接种记录',         icon: '💉', render: renderVaccines },
+  visits:      { title: '看诊',     subtitle: '各科就诊',         icon: '🏥', render: renderVisits },
+  claims:      { title: '理赔',     subtitle: '保险报销',         icon: '📑', render: renderClaims },
+  analytics:   { title: '分析',     subtitle: '身体状况趋势',     icon: '📊', render: renderAnalytics },
+  more:        { title: '更多',     subtitle: '数据 · 设置',      icon: '📋', render: renderMore },
+  search:      { title: '搜索',     subtitle: '检索所有记录',     icon: '🔍', render: renderSearch },
 };
 
 let currentPage = 'dashboard';
@@ -810,6 +876,8 @@ function navigate(page, context = {}, navOpts = {}) {
   const meta = pages[page];
   $('#pageTitle').textContent = meta.title;
   $('#pageSubtitle').textContent = meta.subtitle;
+  const hm = document.getElementById('headerMark');
+  if (hm) hm.textContent = meta.icon || '🏠';
   const container = $('#pageContainer');
   container.innerHTML = '';
   meta.render(container, context);
@@ -1621,7 +1689,7 @@ function renderDailyEdit(container, ctx) {
     <section class="card p-4 space-y-3">
       <div>
         <label class="label">日期</label>
-        <input type="date" class="input" id="logDate" value="${date}" />
+        <input type="text" class="input" id="logDate" value="${escapeHtml(date)}" inputmode="numeric" autocomplete="off" placeholder="YYYY-MM-DD" />
       </div>
     </section>
 
@@ -1666,6 +1734,8 @@ function renderDailyEdit(container, ctx) {
       </div>
     </div>
   `;
+
+  attachChineseDatePicker($('#logDate', container), date);
 
   // Pain sliders
   container.addEventListener('input', e => {
@@ -1855,7 +1925,7 @@ function openVaccineEditor(id) {
     <div class="space-y-3">
       <div>
         <label class="label">日期</label>
-        <input class="input" type="date" id="vacDate" value="${v.date}" />
+        <input class="input" type="text" id="vacDate" value="${escapeHtml(v.date)}" inputmode="numeric" autocomplete="off" placeholder="YYYY-MM-DD" />
       </div>
       <div>
         <label class="label">疫苗名称</label>
@@ -1916,6 +1986,7 @@ function openVaccineEditor(id) {
       navigate(currentPage, currentContext);
     }}
   ].filter(Boolean));
+  attachChineseDatePicker(document.getElementById('vacDate'), v.date);
 }
 
 /* ---------- 10. PAGE: VISITS ---------- */
@@ -2001,7 +2072,7 @@ function openVisitEditor(id) {
       <div class="grid grid-cols-2 gap-3">
         <div>
           <label class="label">日期</label>
-          <input class="input" type="date" id="visitDate" value="${v.date}" />
+          <input class="input" type="text" id="visitDate" value="${escapeHtml(v.date)}" inputmode="numeric" autocomplete="off" placeholder="YYYY-MM-DD" />
         </div>
         <div>
           <label class="label">
@@ -2057,6 +2128,8 @@ function openVisitEditor(id) {
       navigate(currentPage, currentContext);
     }}
   ].filter(Boolean));
+
+  attachChineseDatePicker(document.getElementById('visitDate'), v.date);
 
   // Wire the "+ 新增" button on the clinic field.
   // Opens a small inline form INSIDE the same modal so the rest of the
@@ -2413,7 +2486,7 @@ function openClaimEditor(id) {
       <div class="grid grid-cols-2 gap-3">
         <div>
           <label class="label">日期</label>
-          <input class="input" type="date" id="claimDate" value="${c.date}" />
+          <input class="input" type="text" id="claimDate" value="${escapeHtml(c.date)}" inputmode="numeric" autocomplete="off" placeholder="YYYY-MM-DD" />
         </div>
         <div>
           <label class="label">
@@ -2471,6 +2544,8 @@ function openClaimEditor(id) {
       navigate(currentPage, currentContext);
     }}
   ].filter(Boolean));
+
+  attachChineseDatePicker(document.getElementById('claimDate'), c.date);
 
   // Wire the "+ 新增" button on the insurer field
   const addInsBtn = document.getElementById('addInsurerBtn');
@@ -2693,7 +2768,36 @@ function drawVisitsPieChart(freqMap) {
 
 /* ---------- 13. PAGE: MORE / SETTINGS ---------- */
 
+function openFontScaleSettings() {
+  const current = FONT_SCALE_IDS.includes(state.uiFontScale) ? state.uiFontScale : 'standard';
+  const chips = FONT_SCALE_IDS.map(id => `
+    <button type="button" class="chip ${current === id ? 'is-on' : ''} js-font-pick px-4 py-2" data-pick-fs="${id}">${fontScaleShortLabel(id)}</button>
+  `).join(' ');
+  openModal('字号', `
+    <div class="flex flex-wrap gap-2 justify-center py-1">${chips}</div>
+  `, [{ label: '完成', class: 'btn-primary', onClick: closeModal }]);
+  $('#modalRoot').querySelectorAll('.js-font-pick').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const id = btn.dataset.pickFs;
+      if (!FONT_SCALE_IDS.includes(id)) return;
+      if (state.uiFontScale === id) {
+        closeModal();
+        navigate('more');
+        return;
+      }
+      state.uiFontScale = id;
+      saveState();
+      applyUiFontScaleFromState();
+      closeModal();
+      toast(`已设为「${fontScaleShortLabel(id)}」`, 'success');
+      navigate('more');
+    });
+  });
+}
+
 function renderMore(container) {
+  const fs = FONT_SCALE_IDS.includes(state.uiFontScale) ? state.uiFontScale : 'standard';
+
   container.innerHTML = `
     <section class="card divide-y divide-slate-100">
       <button class="w-full text-left p-4 flex items-center justify-between hover:bg-slate-50" data-action="goto-vaccines">
@@ -2753,6 +2857,15 @@ function renderMore(container) {
           <div>
             <div class="font-medium">寄语 · 加自己的话</div>
             <div class="text-xs text-slate-500">你已添加 ${(state.customEncouragements || []).length} 条专属句子 · 会与内置话术一起随机出现</div>
+          </div>
+        </div>
+        <span class="text-slate-400">›</span>
+      </button>
+      <button type="button" class="w-full text-left p-4 flex items-center justify-between hover:bg-slate-50" data-action="font-settings">
+        <div class="flex items-center gap-3"><span class="text-2xl">📖</span>
+          <div>
+            <div class="font-medium">字号</div>
+            <div class="text-xs text-slate-500">当前：${escapeHtml(fontScaleShortLabel(fs))}</div>
           </div>
         </div>
         <span class="text-slate-400">›</span>
@@ -2828,6 +2941,7 @@ function renderMore(container) {
     const t = e.target.closest('[data-action]');
     if (!t) return;
     const a = t.dataset.action;
+    if (a === 'font-settings') openFontScaleSettings();
     if (a === 'goto-vaccines')  navigate('vaccines');
     if (a === 'goto-claims')    navigate('claims');
     if (a === 'goto-analytics') navigate('analytics');
@@ -2846,6 +2960,7 @@ function renderMore(container) {
       if (confirm('确定清空所有数据？此操作不可撤销，建议先导出备份。')) {
         state = defaultState();
         saveState();
+        applyUiFontScaleFromState();
         toast('已清空', 'success');
         navigate('dashboard');
       }
@@ -3273,6 +3388,7 @@ function importFromJson() {
       if (!confirm('确定覆盖现有数据？建议先导出备份。')) return;
       state = { ...defaultState(), ...data };
       saveState();
+      applyUiFontScaleFromState();
       toast('已恢复', 'success');
       navigate('dashboard');
     } catch (err) {
@@ -3319,7 +3435,6 @@ function bindGlobalNav() {
     });
   });
   $('#searchBtn').addEventListener('click', () => navigate('search'));
-  $('#menuBtn').addEventListener('click', () => navigate('more'));
 }
 
 function showWelcomeIfEmpty() {
@@ -3342,8 +3457,13 @@ function showWelcomeIfEmpty() {
   ]);
 }
 
-document.addEventListener('DOMContentLoaded', () => {
+document.addEventListener('DOMContentLoaded', async () => {
   bindGlobalNav();
+  const seeded = await tryApplyBundledSeedIfFresh();
+  if (seeded) {
+    applyUiFontScaleFromState();
+    toast('已从网站载入起始档案（已保存到本机）', 'success');
+  }
   navigate('dashboard');
   showWelcomeIfEmpty();
 });
