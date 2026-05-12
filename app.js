@@ -3242,13 +3242,23 @@ function renderMore(container) {
     if (a === 'import-json')    importFromJson();
     if (a === 'install')        promptInstall();
     if (a === 'clear') {
-      if (confirm('确定清空所有数据？此操作不可撤销，建议先导出备份。')) {
-        state = defaultState();
-        saveState();
-        applyUiFontScaleFromState();
-        toast('已清空', 'success');
-        navigate('dashboard');
-      }
+      openModal('清空所有数据', `
+        <p class="text-sm text-slate-600">确定清空<strong>所有</strong>健康档案数据？此操作<strong>不可撤销</strong>。建议先导出 JSON 或 Excel 备份。</p>
+      `, [
+        { label: '取消', class: 'btn-ghost', onClick: closeModal },
+        {
+          label: '清空全部',
+          class: 'btn-danger',
+          onClick: () => {
+            closeModal();
+            state = defaultState();
+            saveState();
+            applyUiFontScaleFromState();
+            toast('已清空', 'success');
+            navigate('dashboard');
+          },
+        },
+      ]);
     }
   });
 }
