@@ -148,7 +148,7 @@ html[data-font-scale="xlarge"] {
   border-color: #bae6fd;
 }
 
-/* Modal */
+/* Modal：全屏居中，避免小屏下边被裁切；留白配合 safe-area */
 .modal-backdrop {
   position: fixed;
   inset: 0;
@@ -156,8 +156,13 @@ html[data-font-scale="xlarge"] {
   backdrop-filter: blur(2px);
   z-index: 40;
   display: flex;
-  align-items: flex-end;
+  align-items: center;
   justify-content: center;
+  padding-top: max(0.75rem, env(safe-area-inset-top, 0px));
+  padding-right: max(0.75rem, env(safe-area-inset-right, 0px));
+  padding-bottom: max(0.75rem, env(safe-area-inset-bottom, 0px));
+  padding-left: max(0.75rem, env(safe-area-inset-left, 0px));
+  box-sizing: border-box;
   animation: fadeIn 0.15s ease;
 }
 @keyframes fadeIn {
@@ -168,20 +173,29 @@ html[data-font-scale="xlarge"] {
   background: white;
   width: 100%;
   max-width: 48rem;
-  max-height: 92vh;
-  border-radius: 1.25rem 1.25rem 0 0;
+  max-height: calc(100vh - 1.75rem);
+  max-height: min(88vh, calc(100dvh - 1.75rem));
+  border-radius: 1.25rem;
   overflow: hidden;
   display: flex;
   flex-direction: column;
-  animation: slideUp 0.22s ease;
+  box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.22);
+  animation: modalDropIn 0.22s ease;
 }
-@keyframes slideUp {
-  from { transform: translateY(100%); }
-  to { transform: translateY(0); }
+@keyframes modalDropIn {
+  from {
+    opacity: 0;
+    transform: translateY(0.75rem) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
 }
 @media (min-width: 640px) {
-  .modal-backdrop { align-items: center; }
-  .modal-panel { border-radius: 1.25rem; max-height: 86vh; }
+  .modal-panel {
+    max-height: 86vh;
+  }
 }
 
 /* Flatpickr 日历需盖住弹窗（modal z-index 40） */
