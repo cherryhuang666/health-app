@@ -1945,21 +1945,16 @@ function renderDailyEdit(container, ctx) {
       if (inp && inp._fp) {
         try { inp._fp.close(); } catch (_) { /* ok */ }
       }
-      openModal('删除当日记录', `
-        <p class="text-sm text-slate-600">确定删除当日记录？此操作<strong>不可撤销</strong>。</p>
-      `, [
-        { label: '取消', class: 'btn-ghost', onClick: closeModal },
-        {
-          label: '删除',
-          class: 'btn-danger',
-          onClick: () => {
-            closeModal();
-            removeById('daily', log.id);
-            toast('已删除', 'success');
-            navigate('daily');
-          },
+      openDeleteConfirmModal({
+        title: '删除当日记录',
+        bodyHtml:
+          '<p class="text-sm text-slate-600">确定删除当日记录？此操作<strong>不可撤销</strong>。</p>',
+        onConfirmed: () => {
+          removeById('daily', log.id);
+          toast('已删除', 'success');
+          navigate('daily');
         },
-      ]);
+      });
       return;
     }
     if (action.dataset.action === 'save') {
@@ -2159,12 +2154,23 @@ function openVaccineEditor(id) {
     </div>
   `, [
     existing ? { label: '删除', class: 'btn-danger', onClick: () => {
-      if (confirm('确定删除该疫苗记录？')) {
-        removeById('vaccines', v.id);
-        closeModal();
-        toast('已删除', 'success');
-        navigate(currentPage, currentContext);
+      const vaccineId = v.id;
+      const dEl = document.getElementById('vacDate');
+      if (dEl && dEl._fp) {
+        try { dEl._fp.close(); } catch (_) { /* ok */ }
       }
+      closeModal();
+      openDeleteConfirmModal({
+        title: '删除疫苗记录',
+        bodyHtml:
+          '<p class="text-sm text-slate-600">确定删除这条<strong>疫苗记录</strong>？此操作<strong>不可撤销</strong>。</p>',
+        onCancel: () => openVaccineEditor(vaccineId),
+        onConfirmed: () => {
+          removeById('vaccines', vaccineId);
+          toast('已删除', 'success');
+          navigate(currentPage, currentContext);
+        },
+      });
     }} : null,
     { label: '取消', class: 'btn-ghost', onClick: closeModal },
     { label: '保存', class: 'btn-primary', onClick: () => {
@@ -2301,12 +2307,23 @@ function openVisitEditor(id) {
     </div>
   `, [
     existing ? { label: '删除', class: 'btn-danger', onClick: () => {
-      if (confirm('确定删除该看诊记录？')) {
-        removeById('visits', v.id);
-        closeModal();
-        toast('已删除', 'success');
-        navigate(currentPage, currentContext);
+      const visitId = v.id;
+      const vdEl = document.getElementById('visitDate');
+      if (vdEl && vdEl._fp) {
+        try { vdEl._fp.close(); } catch (_) { /* ok */ }
       }
+      closeModal();
+      openDeleteConfirmModal({
+        title: '删除看诊记录',
+        bodyHtml:
+          '<p class="text-sm text-slate-600">确定删除这条<strong>看诊记录</strong>？此操作<strong>不可撤销</strong>。</p>',
+        onCancel: () => openVisitEditor(visitId),
+        onConfirmed: () => {
+          removeById('visits', visitId);
+          toast('已删除', 'success');
+          navigate(currentPage, currentContext);
+        },
+      });
     }} : null,
     { label: '取消', class: 'btn-ghost', onClick: closeModal },
     { label: '保存', class: 'btn-primary', onClick: () => {
@@ -2431,22 +2448,28 @@ function openCustomItemManager(opts) {
   };
 
   const attachDeleteHandlers = (panel) => {
-    panel.querySelectorAll('[data-del]').forEach(btn => {
+    panel.querySelectorAll('[data-del]').forEach((btn) => {
       btn.addEventListener('click', () => {
         const key = btn.dataset.del;
+        const item = (state[collection] || []).find((it) => it.key === key);
+        const nameEscaped = escapeHtml(item?.label || key);
         const used = countUsage(key);
-        const msg = used > 0
-          ? `该${itemKind}已有 ${used} ${usageLabel}。删除后历史数据保留但不再出现在选项中。确定删除？`
-          : `确定删除该${itemKind}？`;
-        if (!confirm(msg)) return;
-        state[collection] = (state[collection] || []).filter(c => c.key !== key);
-        saveState();
-        const body = document.querySelector('.modal-panel > div.overflow-y-auto');
-        if (body) {
-          body.innerHTML = buildBody();
-          attachDeleteHandlers(body);
-        }
-        toast('已删除', 'success');
+        const bodyHtml =
+          used > 0
+            ? `<p class="text-sm text-slate-600">「${nameEscaped}」已有 <strong>${used}</strong> ${usageLabel}。删除后历史数据保留但不再出现在选项中。此操作<strong>不可撤销</strong>。</p>`
+            : `<p class="text-sm text-slate-600">确定删除「${nameEscaped}」这项自定义<strong>${escapeHtml(itemKind)}</strong>？此操作<strong>不可撤销</strong>。</p>`;
+        closeModal();
+        openDeleteConfirmModal({
+          title: `删除自定义${itemKind}`,
+          bodyHtml,
+          onCancel: () => openCustomItemManager(opts),
+          onConfirmed: () => {
+            state[collection] = (state[collection] || []).filter((it) => it.key !== key);
+            saveState();
+            toast('已删除', 'success');
+            openCustomItemManager(opts);
+          },
+        });
       });
     });
   };
@@ -2537,14 +2560,27 @@ function openEncourageManager() {
     const bodyEl = document.querySelector('.modal-panel > div.overflow-y-auto');
     if (!bodyEl) return;
 
-    bodyEl.querySelectorAll('.enc-del').forEach(btn => {
+    bodyEl.querySelectorAll('.enc-del').forEach((btn) => {
       btn.addEventListener('click', () => {
         const i = parseInt(btn.dataset.encI, 10);
-        state.customEncouragements = (state.customEncouragements || []).filter((_, j) => j !== i);
-        saveState();
-        bodyEl.innerHTML = rebuildBody();
-        toast('已删除', 'success');
-        bind();
+        const line = (state.customEncouragements || [])[i];
+        const raw = String(line ?? '');
+        const snippet = escapeHtml(raw.length > 120 ? `${raw.slice(0, 120)}…` : raw);
+        closeModal();
+        openDeleteConfirmModal({
+          title: '删除寄语',
+          bodyHtml: `
+            <p class="text-sm text-slate-600">确定删除这条<strong>寄语</strong>？此操作<strong>不可撤销</strong>。</p>
+            <p class="text-xs text-slate-500 mt-2 leading-snug">「${snippet}」</p>
+          `,
+          onCancel: () => openEncourageManager(),
+          onConfirmed: () => {
+            state.customEncouragements = (state.customEncouragements || []).filter((_, j) => j !== i);
+            saveState();
+            toast('已删除', 'success');
+            openEncourageManager();
+          },
+        });
       });
     });
 
@@ -2717,12 +2753,23 @@ function openClaimEditor(id) {
     </div>
   `, [
     existing ? { label: '删除', class: 'btn-danger', onClick: () => {
-      if (confirm('确定删除该理赔记录？')) {
-        removeById('claims', c.id);
-        closeModal();
-        toast('已删除', 'success');
-        navigate(currentPage, currentContext);
+      const claimId = c.id;
+      const cdEl = document.getElementById('claimDate');
+      if (cdEl && cdEl._fp) {
+        try { cdEl._fp.close(); } catch (_) { /* ok */ }
       }
+      closeModal();
+      openDeleteConfirmModal({
+        title: '删除理赔记录',
+        bodyHtml:
+          '<p class="text-sm text-slate-600">确定删除这条<strong>理赔记录</strong>？此操作<strong>不可撤销</strong>。</p>',
+        onCancel: () => openClaimEditor(claimId),
+        onConfirmed: () => {
+          removeById('claims', claimId);
+          toast('已删除', 'success');
+          navigate(currentPage, currentContext);
+        },
+      });
     }} : null,
     { label: '取消', class: 'btn-ghost', onClick: closeModal },
     { label: '保存', class: 'btn-primary', onClick: () => {
@@ -3039,34 +3086,63 @@ function openMultiDeviceSync() {
         toast('云端还没有存档，可先在常用设备上点「上传到云端」', 'info');
         return;
       }
-      if (!confirm('用云端档案覆盖本机全部数据？未备份会丢失差异。')) return;
       closeModal();
-      applyRemoteEnvelope(env, {});
+      openDeleteConfirmModal({
+        title: '从云端下载',
+        confirmLabel: '覆盖本机',
+        bodyHtml:
+          '<p class="text-sm text-slate-600">用<strong>云端档案</strong>覆盖本机<strong>全部</strong>数据？未导出备份可能造成差异<strong>丢失</strong>。</p>',
+        onCancel: () => openMultiDeviceSync(),
+        onConfirmed: () => applyRemoteEnvelope(env, {}),
+      });
     } catch (e) {
       toast(e.message || String(e), 'error');
     }
   });
 
-  $('#syncBtnPush').addEventListener('click', async () => {
+  $('#syncBtnPush').addEventListener('click', () => {
     const urlEl = $('#syncUrlField');
     const tokEl = $('#syncTokenField');
     try {
       setSyncConfig(urlEl.value, tokEl.value);
-      if (!confirm('用本机数据覆盖云端？其他设备下次拉取会以此为准。')) return;
-      saveState();
-      await flushRemotePushNow();
-      toast('已上传到云端', 'success');
+      closeModal();
+      openDeleteConfirmModal({
+        title: '上传到云端',
+        confirmLabel: '覆盖云端',
+        bodyHtml:
+          '<p class="text-sm text-slate-600">用<strong>本机数据</strong>覆盖云端？其它设备下次拉取会<strong>以此为最新</strong>。</p>',
+        onCancel: () => openMultiDeviceSync(),
+        onConfirmed: () => {
+          void (async () => {
+            try {
+              saveState();
+              await flushRemotePushNow();
+              toast('已上传到云端', 'success');
+            } catch (e) {
+              toast(e.message || String(e), 'error');
+            }
+          })();
+        },
+      });
     } catch (e) {
       toast(e.message || String(e), 'error');
     }
   });
 
   $('#syncBtnClear').addEventListener('click', () => {
-    if (!confirm('清除本机存的云端地址与同步码？健康档案仍在本机浏览器里。')) return;
-    setSyncConfig('', '');
-    toast('已停用同步');
     closeModal();
-    navigate('more');
+    openDeleteConfirmModal({
+      title: '停用同步',
+      confirmLabel: '清除',
+      bodyHtml:
+        '<p class="text-sm text-slate-600">清除本机保存的<strong>云端地址与同步码</strong>？健康档案仍保留在本机浏览器中。</p>',
+      onCancel: () => openMultiDeviceSync(),
+      onConfirmed: () => {
+        setSyncConfig('', '');
+        toast('已停用同步');
+        navigate('more');
+      },
+    });
   });
 }
 
@@ -3242,23 +3318,19 @@ function renderMore(container) {
     if (a === 'import-json')    importFromJson();
     if (a === 'install')        promptInstall();
     if (a === 'clear') {
-      openModal('清空所有数据', `
-        <p class="text-sm text-slate-600">确定清空<strong>所有</strong>健康档案数据？此操作<strong>不可撤销</strong>。建议先导出 JSON 或 Excel 备份。</p>
-      `, [
-        { label: '取消', class: 'btn-ghost', onClick: closeModal },
-        {
-          label: '清空全部',
-          class: 'btn-danger',
-          onClick: () => {
-            closeModal();
-            state = defaultState();
-            saveState();
-            applyUiFontScaleFromState();
-            toast('已清空', 'success');
-            navigate('dashboard');
-          },
+      openDeleteConfirmModal({
+        title: '清空所有数据',
+        bodyHtml:
+          '<p class="text-sm text-slate-600">确定清空<strong>所有</strong>健康档案数据？此操作<strong>不可撤销</strong>。建议先导出 JSON 或 Excel 备份。</p>',
+        confirmLabel: '清空全部',
+        onConfirmed: () => {
+          state = defaultState();
+          saveState();
+          applyUiFontScaleFromState();
+          toast('已清空', 'success');
+          navigate('dashboard');
         },
-      ]);
+      });
     }
   });
 }
@@ -3407,6 +3479,45 @@ function closeModal() {
   document.querySelectorAll('.flatpickr-calendar').forEach((el) => el.remove());
 }
 
+/**
+ * 统一的删除确认弹窗（对齐「删除当日记录」：标题 + slate 段落 + 取消 / Primary 危险按钮）
+ * @param {object} opts
+ * @param {string} opts.title
+ * @param {string} opts.bodyHtml  整块说明 HTML（建议含 `<p class="text-sm text-slate-600">`）
+ * @param {string} [opts.confirmLabel='删除']
+ * @param {string} [opts.confirmClass='btn-danger']
+ * @param {Function} [opts.onCancel]  点取消或关掉后的额外逻辑（先执行 closeModal）
+ * @param {Function} opts.onConfirmed 确认后的逻辑（会先 closeModal）
+ */
+function openDeleteConfirmModal(opts) {
+  const {
+    title,
+    bodyHtml,
+    confirmLabel = '删除',
+    confirmClass = 'btn-danger',
+    onCancel,
+    onConfirmed,
+  } = opts || {};
+  openModal(title || '删除确认', bodyHtml || '<p class="text-sm text-slate-600">确定删除？此操作<strong>不可撤销</strong>。</p>', [
+    {
+      label: '取消',
+      class: 'btn-ghost',
+      onClick: () => {
+        closeModal();
+        if (typeof onCancel === 'function') onCancel();
+      },
+    },
+    {
+      label: confirmLabel,
+      class: confirmClass,
+      onClick: () => {
+        closeModal();
+        if (typeof onConfirmed === 'function') onConfirmed();
+      },
+    },
+  ]);
+}
+
 /* ---------- 16. EXCEL IMPORT / EXPORT ---------- */
 
 function importFromXlsx() {
@@ -3421,21 +3532,38 @@ function importFromXlsx() {
       const wb = XLSX.read(data, { type: 'array', cellDates: false });
       const result = parseImportedWorkbook(wb);
       const summary = `识别到：\n· ${result.daily.length} 条每日记录\n· ${result.vaccines.length} 条疫苗\n· ${result.visits.length} 次看诊\n· ${result.claims.length} 单理赔\n\n是否合并到现有数据？（同日期的每日记录会被覆盖）`;
-      if (!confirm(summary)) return;
+      openDeleteConfirmModal({
+        title: '从 Excel 导入',
+        confirmLabel: '合并导入',
+        bodyHtml:
+          `<p class="text-sm text-slate-600 whitespace-pre-line">${escapeHtml(summary)}</p>`,
+        onConfirmed: () => {
+          const byDate = {};
+          state.daily.forEach((d) => { byDate[d.date] = d; });
+          result.daily.forEach((d) => { byDate[d.date] = d; });
+          state.daily = Object.values(byDate).sort((a, b) =>
+            (b.date || '').localeCompare(a.date || '')
+          );
 
-      // Merge daily by date
-      const byDate = {};
-      state.daily.forEach(d => byDate[d.date] = d);
-      result.daily.forEach(d => byDate[d.date] = d);
-      state.daily = Object.values(byDate).sort((a,b) => (b.date||'').localeCompare(a.date||''));
+          state.vaccines = mergeUnique(
+            [...state.vaccines, ...result.vaccines],
+            (v) => `${v.date}|${v.name}`,
+          );
+          state.visits = mergeUnique(
+            [...state.visits, ...result.visits],
+            (v) => `${v.date}|${v.clinic}|${(v.summary || '').slice(0, 20)}`,
+          );
+          state.claims = mergeUnique(
+            [...state.claims, ...result.claims],
+            (c) => `${c.date}|${c.insurer}|${c.amount}`,
+          );
 
-      state.vaccines = mergeUnique([...state.vaccines, ...result.vaccines], v => v.date + '|' + v.name);
-      state.visits   = mergeUnique([...state.visits,   ...result.visits  ], v => v.date + '|' + v.clinic + '|' + (v.summary||'').slice(0,20));
-      state.claims   = mergeUnique([...state.claims,   ...result.claims  ], c => c.date + '|' + c.insurer + '|' + c.amount);
+          saveState();
+          toast('导入成功', 'success');
+          navigate('dashboard');
+        },
+      });
 
-      saveState();
-      toast('导入成功', 'success');
-      navigate('dashboard');
     } catch (err) {
       console.error(err);
       toast('导入失败：' + err.message, 'error');
@@ -4024,12 +4152,19 @@ function importFromJson() {
       const text = await file.text();
       const data = JSON.parse(text);
       if (!data || typeof data !== 'object') throw new Error('文件格式不正确');
-      if (!confirm('确定覆盖现有数据？建议先导出备份。')) return;
-      state = { ...defaultState(), ...data };
-      saveState();
-      applyUiFontScaleFromState();
-      toast('已恢复', 'success');
-      navigate('dashboard');
+      openDeleteConfirmModal({
+        title: '从 JSON 恢复',
+        confirmLabel: '覆盖恢复',
+        bodyHtml:
+          '<p class="text-sm text-slate-600">确定用文件<strong>完整覆盖</strong>本机档案？建议先<strong>导出备份</strong>。此操作<strong>不可撤销</strong>。</p>',
+        onConfirmed: () => {
+          state = { ...defaultState(), ...data };
+          saveState();
+          applyUiFontScaleFromState();
+          toast('已恢复', 'success');
+          navigate('dashboard');
+        },
+      });
     } catch (err) {
       toast('导入失败：' + err.message, 'error');
     }
