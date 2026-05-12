@@ -1941,11 +1941,26 @@ function renderDailyEdit(container, ctx) {
     if (!action) return;
     if (action.dataset.action === 'back')   navigate('dashboard');
     if (action.dataset.action === 'delete') {
-      if (confirm('确定删除当日记录？此操作不可撤销。')) {
-        removeById('daily', log.id);
-        toast('已删除', 'success');
-        navigate('daily');
+      const inp = $('#logDate', container);
+      if (inp && inp._fp) {
+        try { inp._fp.close(); } catch (_) { /* ok */ }
       }
+      openModal('删除当日记录', `
+        <p class="text-sm text-slate-600">确定删除当日记录？此操作<strong>不可撤销</strong>。</p>
+      `, [
+        { label: '取消', class: 'btn-ghost', onClick: closeModal },
+        {
+          label: '删除',
+          class: 'btn-danger',
+          onClick: () => {
+            closeModal();
+            removeById('daily', log.id);
+            toast('已删除', 'success');
+            navigate('daily');
+          },
+        },
+      ]);
+      return;
     }
     if (action.dataset.action === 'save') {
       log.date    = $('#logDate', container).value;
