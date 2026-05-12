@@ -10,6 +10,10 @@ const STORAGE_KEY = 'health-app:v1';
 const SYNC_URL_KEY = 'health-app:sync-url';
 const SYNC_TOKEN_KEY = 'health-app:sync-token';
 const CLOUD_DEBOUNCE_MS = 900;
+/** 前台定时拉取云端较新存档（与启动时逻辑一致：仅当云端 savedAt 更大时覆盖本机） */
+const CLOUD_AUTO_PULL_INTERVAL_MS = 120_000;
+/** 切回标签 / pageshow 时短防抖，避免连续两次请求 */
+const CLOUD_VISIBILITY_PULL_DELAY_MS = 400;
 
 // Pain locations covered in the original spreadsheet
 const PAIN_PARTS = [
@@ -657,6 +661,8 @@ function setSyncConfig(baseUrl, token) {
 }
 
 let _remotePushTimer = null;
+let _cloudAutoPullIntervalId = null;
+let _cloudVisibilityPullTimer = null;
 
 function normalizeSavedAt(ms) {
   const n = Number(ms);
@@ -750,18 +756,77 @@ async function flushRemotePushNow() {
   return syncPushFullState();
 }
 
-async function bootstrapCloudPullOnce() {
+/**
+ * 若云端存档较新则静默覆盖本机（与「从云端下载」相同合并规则，无弹窗）。
+ * 在「编辑当日」页跳过，以免覆盖未点保存的表单。
+ */
+async function maybeApplyRemoteIfNewer(opts = {}) {
+  const rerender = opts.rerender !== false;
+  const logErrors = opts.logErrors !== false;
+  const toastOnApply = opts.toastOnApply === true;
   const cfg = getSyncConfig();
-  if (!cfg.baseUrl || !cfg.token) return;
+  if (!cfg.baseUrl || !cfg.token) return false;
+  if (currentPage === 'dailyEdit') return false;
   try {
     const env = await syncPullFromRemote();
-    if (!env) return;
+    if (!env) return false;
     const rs = normalizeSavedAt(env.savedAt != null ? env.savedAt : env.state.savedAt);
     const ls = normalizeSavedAt(state.savedAt);
-    if (rs > ls) applyRemoteEnvelope(env, { silent: true });
+    if (rs <= ls) return false;
+    applyRemoteEnvelope(env, { silent: true });
+    if (rerender) rerenderCurrentPage();
+    if (toastOnApply) toast('已从云端同步较新数据', 'success');
+    return true;
   } catch (e) {
-    if (localStorage.getItem(STORAGE_KEY)) console.warn('启动时云端拉取跳过:', e);
+    if (logErrors && localStorage.getItem(STORAGE_KEY)) console.warn('云端拉取跳过:', e);
+    return false;
   }
+}
+
+async function bootstrapCloudPullOnce() {
+  await maybeApplyRemoteIfNewer({ rerender: false, logErrors: true, toastOnApply: false });
+}
+
+function scheduleCloudAutoPullDebounced() {
+  if (_cloudVisibilityPullTimer) clearTimeout(_cloudVisibilityPullTimer);
+  _cloudVisibilityPullTimer = setTimeout(() => {
+    _cloudVisibilityPullTimer = null;
+    void maybeApplyRemoteIfNewer({ rerender: true, logErrors: false, toastOnApply: true });
+  }, CLOUD_VISIBILITY_PULL_DELAY_MS);
+}
+
+function cloudVisibilityChangeHandler() {
+  if (document.visibilityState === 'visible') scheduleCloudAutoPullDebounced();
+}
+
+function cloudPageshowHandler() {
+  scheduleCloudAutoPullDebounced();
+}
+
+function stopCloudAutoPull() {
+  if (_cloudAutoPullIntervalId) {
+    clearInterval(_cloudAutoPullIntervalId);
+    _cloudAutoPullIntervalId = null;
+  }
+  if (_cloudVisibilityPullTimer) {
+    clearTimeout(_cloudVisibilityPullTimer);
+    _cloudVisibilityPullTimer = null;
+  }
+  document.removeEventListener('visibilitychange', cloudVisibilityChangeHandler);
+  window.removeEventListener('pageshow', cloudPageshowHandler);
+}
+
+/** 在已填写同步地址与同步码时启用：定时 + 切回前台时拉取较新云端存档 */
+function startCloudAutoPull() {
+  stopCloudAutoPull();
+  const cfg = getSyncConfig();
+  if (!cfg.baseUrl || !cfg.token) return;
+  document.addEventListener('visibilitychange', cloudVisibilityChangeHandler);
+  window.addEventListener('pageshow', cloudPageshowHandler);
+  _cloudAutoPullIntervalId = setInterval(() => {
+    if (document.visibilityState !== 'visible') return;
+    void maybeApplyRemoteIfNewer({ rerender: true, logErrors: false, toastOnApply: true });
+  }, CLOUD_AUTO_PULL_INTERVAL_MS);
 }
 
 async function testSyncConnection(baseUrlInput, tokenInput) {
@@ -1014,6 +1079,15 @@ const pages = {
 
 let currentPage = 'dashboard';
 let currentContext = {};
+
+/** 自动从云端合并后刷新当前页（不切页、不关弹窗） */
+function rerenderCurrentPage() {
+  const meta = pages[currentPage];
+  if (!meta) return;
+  const container = $('#pageContainer');
+  container.innerHTML = '';
+  meta.render(container, currentContext);
+}
 
 /** 首页内导航时带上简报展开状态 + 热力图月视图上下文 */
 function mergeDashboardCtx(patch = {}) {
@@ -3044,6 +3118,7 @@ function openMultiDeviceSync() {
     `
     <div class="space-y-3 text-sm text-slate-600">
       <p>在每台设备上用<strong>相同的云端地址</strong>和<strong>相同的同步码</strong>即可共享一份档案（无需用户名密码）。</p>
+      <p class="text-xs text-slate-600">保存成功后，本机会<strong>自动</strong>在打开应用、切回前台时以及约每 2 分钟检查云端；若云端存档<strong>更新</strong>（时间戳更晚），会<strong>无声合并到本机</strong>。你在「编辑当日」未保存时不会覆盖，以免丢掉正在改的内容。</p>
       <p class="text-xs text-slate-500">同步码必须与服务器环境变量 <code class="bg-slate-100 px-1 rounded text-slate-700">HEALTH_SYNC_TOKEN</code> 完全一致。详见仓库里的 flask_app.py 顶部说明。</p>
       <label class="block"><span class="text-xs text-slate-500">云端地址（不要末尾斜杠）</span>
         <input class="input mt-1 w-full" id="syncUrlField" autocomplete="off" autocapitalize="off"
@@ -3070,6 +3145,7 @@ function openMultiDeviceSync() {
     try {
       await testSyncConnection(urlEl.value, tokEl.value);
       setSyncConfig(urlEl.value, tokEl.value);
+      startCloudAutoPull();
       toast('同步设置已保存，连接正常', 'success');
     } catch (e) {
       toast(e.message || String(e), 'error');
@@ -3139,6 +3215,7 @@ function openMultiDeviceSync() {
       onCancel: () => openMultiDeviceSync(),
       onConfirmed: () => {
         setSyncConfig('', '');
+        stopCloudAutoPull();
         toast('已停用同步');
         navigate('more');
       },
@@ -3292,7 +3369,7 @@ function renderMore(container) {
 
     <section class="card p-4 text-center text-xs text-slate-400">
       <div>张婷要健康 · v1.0</div>
-      <div class="mt-1">${sc.baseUrl && sc.token ? '📡 云端同步：已启用（仍有一份本地拷贝）' : '默认：档案仅保存在本机浏览器 · 可自行开启云端'}</div>
+      <div class="mt-1">${sc.baseUrl && sc.token ? '📡 云端同步：已启用 · 较新存档会自动拉取，本机保存会防抖上传' : '默认：档案仅保存在本机浏览器 · 可自行开启云端'}</div>
       <div class="mt-2">📊 数据：${state.daily.length} 条每日记录 · ${state.vaccines.length} 条疫苗 · ${state.visits.length} 次看诊 · ${state.claims.length} 单理赔</div>
     </section>
   `;
@@ -4239,6 +4316,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     toast('已从网站载入起始档案（已保存到本机）', 'success');
   }
   await bootstrapCloudPullOnce();
+  startCloudAutoPull();
   navigate('dashboard');
   showWelcomeIfEmpty();
 });
