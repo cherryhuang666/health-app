@@ -6,6 +6,10 @@
 /* ---------- 1. CONSTANTS & SCHEMA ---------- */
 
 const STORAGE_KEY = 'health-app:v1';
+/** 多设备同步：API 基址（如 https://你的用户名.pythonanywhere.com）与本机 Bearer 令牌 */
+const SYNC_URL_KEY = 'health-app:sync-url';
+const SYNC_TOKEN_KEY = 'health-app:sync-token';
+const CLOUD_DEBOUNCE_MS = 900;
 
 // Pain locations covered in the original spreadsheet
 const PAIN_PARTS = [
@@ -620,7 +624,167 @@ const defaultState = () => ({
   doctorReportBriefing: '',
   /** 全应用字号：standard | large | xlarge（随本地存档保存） */
   uiFontScale: 'standard',
+  /** 本地/云端单调递增时间戳，用于合并时选较新的一份（毫秒） */
+  savedAt: 0,
 });
+
+function trimSyncUrl(raw) {
+  if (!raw || typeof raw !== 'string') return '';
+  let u = raw.trim();
+  if (!u) return '';
+  while (u.endsWith('/')) u = u.slice(0, -1);
+  return u;
+}
+
+function getSyncConfig() {
+  try {
+    return {
+      baseUrl: trimSyncUrl(localStorage.getItem(SYNC_URL_KEY)),
+      token: (localStorage.getItem(SYNC_TOKEN_KEY) || '').trim(),
+    };
+  } catch (_) {
+    return { baseUrl: '', token: '' };
+  }
+}
+
+function setSyncConfig(baseUrl, token) {
+  const u = trimSyncUrl(baseUrl);
+  const t = (token || '').trim();
+  if (u) localStorage.setItem(SYNC_URL_KEY, u);
+  else localStorage.removeItem(SYNC_URL_KEY);
+  if (t) localStorage.setItem(SYNC_TOKEN_KEY, t);
+  else localStorage.removeItem(SYNC_TOKEN_KEY);
+}
+
+let _remotePushTimer = null;
+
+function normalizeSavedAt(ms) {
+  const n = Number(ms);
+  return Number.isFinite(n) && n > 0 ? n : 0;
+}
+
+async function syncFetch(path, opts = {}) {
+  const { baseUrl, token } = getSyncConfig();
+  if (!baseUrl || !token) throw new Error('未配置云端地址或同步码');
+  const url = `${baseUrl}${path.startsWith('/') ? path : '/' + path}`;
+  const headers = new Headers(opts.headers || {});
+  headers.set('Authorization', `Bearer ${token}`);
+  const res = await fetch(url, { ...opts, headers });
+  const text = await res.text().catch(() => '');
+  let body = {};
+  try {
+    body = text ? JSON.parse(text) : {};
+  } catch (_) {}
+  return { ok: res.ok, status: res.status, body };
+}
+
+async function syncPullFromRemote() {
+  const { ok, status, body } = await syncFetch('/api/health-sync', {
+    cache: 'no-store',
+    method: 'GET',
+  });
+  if (status === 401) throw new Error('同步码错误或无效');
+  if (status === 503) throw new Error((body && body.error) || '服务器未启用同步（需设置 HEALTH_SYNC_TOKEN）');
+  if (status >= 400) throw new Error((body && body.error) || `云端错误 (${status})`);
+  if (!ok) throw new Error('无法从云端拉取');
+  if (!body || typeof body !== 'object') throw new Error('云端响应无效');
+  if (body.state === null || body.state === undefined) return null;
+  if (typeof body.state !== 'object') throw new Error('云端数据格式错误');
+  return body;
+}
+
+async function syncPushFullState() {
+  const { ok, status, body } = await syncFetch('/api/health-sync', {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json; charset=utf-8' },
+    body: JSON.stringify(state),
+  });
+  if (status === 401) throw new Error('同步码错误或无效');
+  if (status >= 400) throw new Error((body && body.error) || `云端拒绝保存 (${status})`);
+  return ok && body.ok === true;
+}
+
+function persistLocalSkipRemote() {
+  localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+}
+
+/** 仅用云端数据覆盖内存与本机存档，不触发上传（silent：启动拉取时用，不跳转、不打断） */
+function applyRemoteEnvelope(envelope, opts = {}) {
+  const silent = opts.silent === true;
+  const remote = envelope && envelope.state ? envelope.state : null;
+  if (!remote || typeof remote !== 'object') return false;
+  const merged = { ...defaultState(), ...remote };
+  merged.savedAt = normalizeSavedAt(
+    envelope.savedAt != null ? envelope.savedAt : merged.savedAt
+  );
+  state = merged;
+  persistLocalSkipRemote();
+  applyUiFontScaleFromState();
+  if (!silent) toast('已从云端更新', 'success');
+  if (!silent) navigate(currentPage === 'dailyEdit' ? 'dashboard' : currentPage);
+  return true;
+}
+
+function scheduleRemotePush() {
+  const cfg = getSyncConfig();
+  if (!cfg.baseUrl || !cfg.token) return;
+  if (_remotePushTimer) clearTimeout(_remotePushTimer);
+  _remotePushTimer = setTimeout(async () => {
+    _remotePushTimer = null;
+    try {
+      await syncPushFullState();
+    } catch (e) {
+      console.warn('云端同步推送失败:', e);
+    }
+  }, CLOUD_DEBOUNCE_MS);
+}
+
+/** 立即上传（用于「覆盖云端」按钮，避免等待防抖） */
+async function flushRemotePushNow() {
+  const cfg = getSyncConfig();
+  if (!cfg.baseUrl || !cfg.token) return false;
+  if (_remotePushTimer) {
+    clearTimeout(_remotePushTimer);
+    _remotePushTimer = null;
+  }
+  return syncPushFullState();
+}
+
+async function bootstrapCloudPullOnce() {
+  const cfg = getSyncConfig();
+  if (!cfg.baseUrl || !cfg.token) return;
+  try {
+    const env = await syncPullFromRemote();
+    if (!env) return;
+    const rs = normalizeSavedAt(env.savedAt != null ? env.savedAt : env.state.savedAt);
+    const ls = normalizeSavedAt(state.savedAt);
+    if (rs > ls) applyRemoteEnvelope(env, { silent: true });
+  } catch (e) {
+    if (localStorage.getItem(STORAGE_KEY)) console.warn('启动时云端拉取跳过:', e);
+  }
+}
+
+async function testSyncConnection(baseUrlInput, tokenInput) {
+  const u = trimSyncUrl(baseUrlInput);
+  const t = (tokenInput || '').trim();
+  if (!u || !t) throw new Error('请先填写云端地址与同步码');
+  const probe = trimSyncUrl(u);
+  const url = `${probe}/api/health-sync`;
+  const res = await fetch(url, {
+    cache: 'no-store',
+    method: 'GET',
+    headers: { Authorization: `Bearer ${t}` },
+  });
+  const text = await res.text().catch(() => '');
+  let body = {};
+  try {
+    body = text ? JSON.parse(text) : {};
+  } catch (_) {}
+  if (res.status === 401) throw new Error('同步码不正确');
+  if (res.status === 503) throw new Error(body.error || '服务器未启用同步');
+  if (res.status >= 400) throw new Error(body.error || `HTTP ${res.status}`);
+  return true;
+}
 
 function getAllClinics() {
   const custom = (state.customClinics || []).map(c => ({
@@ -698,7 +862,9 @@ function loadState() {
 }
 
 function saveState() {
+  state.savedAt = Date.now();
   localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+  scheduleRemotePush();
 }
 
 /**
@@ -2807,9 +2973,89 @@ function openFontScaleSettings() {
   });
 }
 
+function openMultiDeviceSync() {
+  const c = getSyncConfig();
+  openModal(
+    '多设备云端同步',
+    `
+    <div class="space-y-3 text-sm text-slate-600">
+      <p>在每台设备上用<strong>相同的云端地址</strong>和<strong>相同的同步码</strong>即可共享一份档案（无需用户名密码）。</p>
+      <p class="text-xs text-slate-500">同步码必须与服务器环境变量 <code class="bg-slate-100 px-1 rounded text-slate-700">HEALTH_SYNC_TOKEN</code> 完全一致。详见仓库里的 flask_app.py 顶部说明。</p>
+      <label class="block"><span class="text-xs text-slate-500">云端地址（不要末尾斜杠）</span>
+        <input class="input mt-1 w-full" id="syncUrlField" autocomplete="off" autocapitalize="off"
+          placeholder="https://你的用户名.pythonanywhere.com" value="${escapeHtml(c.baseUrl)}" />
+      </label>
+      <label class="block"><span class="text-xs text-slate-500">同步码</span>
+        <input class="input mt-1 w-full" id="syncTokenField" type="password" autocomplete="off"
+          placeholder="一串长随机口令" value="${escapeHtml(c.token)}" />
+      </label>
+      <div class="flex flex-col gap-2 pt-1">
+        <button type="button" class="btn-primary w-full" id="syncBtnSaveTest">保存并测试连接</button>
+        <button type="button" class="btn-ghost w-full" id="syncBtnPull">从云端下载（覆盖本机）</button>
+        <button type="button" class="btn-ghost w-full" id="syncBtnPush">上传到云端（覆盖云端）</button>
+        <button type="button" class="btn-ghost w-full text-red-600" id="syncBtnClear">停用同步（仅删掉本机的地址与同步码）</button>
+      </div>
+    </div>
+    `,
+    [{ label: '关闭', class: 'btn-ghost', onClick: closeModal }]
+  );
+
+  $('#syncBtnSaveTest').addEventListener('click', async () => {
+    const urlEl = $('#syncUrlField');
+    const tokEl = $('#syncTokenField');
+    try {
+      await testSyncConnection(urlEl.value, tokEl.value);
+      setSyncConfig(urlEl.value, tokEl.value);
+      toast('同步设置已保存，连接正常', 'success');
+    } catch (e) {
+      toast(e.message || String(e), 'error');
+    }
+  });
+
+  $('#syncBtnPull').addEventListener('click', async () => {
+    const urlEl = $('#syncUrlField');
+    const tokEl = $('#syncTokenField');
+    try {
+      setSyncConfig(urlEl.value, tokEl.value);
+      const env = await syncPullFromRemote();
+      if (!env) {
+        toast('云端还没有存档，可先在常用设备上点「上传到云端」', 'info');
+        return;
+      }
+      if (!confirm('用云端档案覆盖本机全部数据？未备份会丢失差异。')) return;
+      closeModal();
+      applyRemoteEnvelope(env, {});
+    } catch (e) {
+      toast(e.message || String(e), 'error');
+    }
+  });
+
+  $('#syncBtnPush').addEventListener('click', async () => {
+    const urlEl = $('#syncUrlField');
+    const tokEl = $('#syncTokenField');
+    try {
+      setSyncConfig(urlEl.value, tokEl.value);
+      if (!confirm('用本机数据覆盖云端？其他设备下次拉取会以此为准。')) return;
+      saveState();
+      await flushRemotePushNow();
+      toast('已上传到云端', 'success');
+    } catch (e) {
+      toast(e.message || String(e), 'error');
+    }
+  });
+
+  $('#syncBtnClear').addEventListener('click', () => {
+    if (!confirm('清除本机存的云端地址与同步码？健康档案仍在本机浏览器里。')) return;
+    setSyncConfig('', '');
+    toast('已停用同步');
+    closeModal();
+    navigate('more');
+  });
+}
+
 function renderMore(container) {
   const fs = FONT_SCALE_IDS.includes(state.uiFontScale) ? state.uiFontScale : 'standard';
-
+  const sc = getSyncConfig();
   container.innerHTML = `
     <section class="card divide-y divide-slate-100">
       <button class="w-full text-left p-4 flex items-center justify-between hover:bg-slate-50" data-action="goto-vaccines">
@@ -2882,6 +3128,15 @@ function renderMore(container) {
         </div>
         <span class="text-slate-400">›</span>
       </button>
+      <button type="button" class="w-full text-left p-4 flex items-center justify-between hover:bg-slate-50" data-action="multi-device-sync">
+        <div class="flex items-center gap-3"><span class="text-2xl">📡</span>
+          <div>
+            <div class="font-medium">多设备云端同步</div>
+            <div class="text-xs text-slate-500">${sc.baseUrl && sc.token ? '已配置 · 可多台手机共享档案' : '未开启 · PythonAnywhere 等服务器 + 同步码'}</div>
+          </div>
+        </div>
+        <span class="text-slate-400">›</span>
+      </button>
     </section>
 
     <section class="card divide-y divide-slate-100">
@@ -2944,7 +3199,7 @@ function renderMore(container) {
 
     <section class="card p-4 text-center text-xs text-slate-400">
       <div>张婷要健康 · v1.0</div>
-      <div class="mt-1">所有数据仅保存在本机浏览器中</div>
+      <div class="mt-1">${sc.baseUrl && sc.token ? '📡 云端同步：已启用（仍有一份本地拷贝）' : '默认：档案仅保存在本机浏览器 · 可自行开启云端'}</div>
       <div class="mt-2">📊 数据：${state.daily.length} 条每日记录 · ${state.vaccines.length} 条疫苗 · ${state.visits.length} 次看诊 · ${state.claims.length} 单理赔</div>
     </section>
   `;
@@ -2954,6 +3209,7 @@ function renderMore(container) {
     if (!t) return;
     const a = t.dataset.action;
     if (a === 'font-settings') openFontScaleSettings();
+    if (a === 'multi-device-sync') openMultiDeviceSync();
     if (a === 'goto-vaccines')  navigate('vaccines');
     if (a === 'goto-claims')    navigate('claims');
     if (a === 'goto-analytics') navigate('analytics');
@@ -3461,7 +3717,7 @@ function showWelcomeIfEmpty() {
         <li>查看图表分析身体趋势</li>
         <li>从你现有的 Excel 一键导入历史数据</li>
       </ul>
-      <p class="text-xs text-slate-500 mt-3">所有数据只存在本机浏览器中，不会上传到任何服务器。</p>
+      <p class="text-xs text-slate-500 mt-3">默认数据只在本机浏览器。若已配置云端同步，会与你的私人服务器备份相同步。</p>
     </div>
   `, [
     { label: '从 Excel 导入历史', class: 'btn-ghost', onClick: () => { closeModal(); importFromXlsx(); } },
@@ -3476,6 +3732,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     applyUiFontScaleFromState();
     toast('已从网站载入起始档案（已保存到本机）', 'success');
   }
+  await bootstrapCloudPullOnce();
   navigate('dashboard');
   showWelcomeIfEmpty();
 });
