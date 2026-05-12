@@ -1037,6 +1037,8 @@ function navigate(page, context = {}, navOpts = {}) {
     console.warn('Unknown page', page);
     return;
   }
+  /* Flatpickr 把日历插在 body 上且 z-index 很高；销毁页面表单时若不清理会挡住后续界面（像弹窗关不掉）。 */
+  closeModal();
   currentPage = page;
   currentContext = context;
   const meta = pages[page];
@@ -3377,6 +3379,7 @@ function openModal(title, bodyHtml, buttons = []) {
 
 function closeModal() {
   $('#modalRoot').innerHTML = '';
+  document.querySelectorAll('.flatpickr-calendar').forEach((el) => el.remove());
 }
 
 /* ---------- 16. EXCEL IMPORT / EXPORT ---------- */
@@ -3391,7 +3394,7 @@ function importFromXlsx() {
     try {
       const data = await file.arrayBuffer();
       const wb = XLSX.read(data, { type: 'array', cellDates: false });
-      const result = parseLegacySheet(wb);
+      const result = parseImportedWorkbook(wb);
       const summary = `识别到：\n· ${result.daily.length} 条每日记录\n· ${result.vaccines.length} 条疫苗\n· ${result.visits.length} 次看诊\n· ${result.claims.length} 单理赔\n\n是否合并到现有数据？（同日期的每日记录会被覆盖）`;
       if (!confirm(summary)) return;
 
@@ -3429,158 +3432,501 @@ function mergeUnique(arr, keyFn) {
   return out;
 }
 
-/* Parse the legacy "就医头痛记录表" format.
- * Heuristics:
- *  - Header row contains "日期" in column A; we map column positions to keys.
- *  - For each data row with a numeric date, we extract daily fields.
- *  - Cells in clinic columns produce visit records.
- *  - Cells in insurance columns (numbers) produce claim records.
- *  - 疫苗 column produces vaccine records.
- */
-function parseLegacySheet(wb) {
-  const out = { daily: [], vaccines: [], visits: [], claims: [] };
-  const sheetNames = wb.SheetNames;
+function xlsxNormalizeSheetTitle(s) {
+  return String(s || '').replace(/\s+/g, '');
+}
 
-  for (const sn of sheetNames) {
+/** 解析单元格日期 -> YYYY-MM-DD */
+function parseXlsxDateCell(rawDate) {
+  if (rawDate == null || rawDate === '') return null;
+  if (typeof rawDate === 'number') return excelSerialToISO(rawDate);
+  if (typeof rawDate === 'string' && /^\d{4}-\d{2}-\d{2}/.test(rawDate)) return rawDate.slice(0, 10);
+  if (rawDate instanceof Date && !isNaN(rawDate.getTime())) return rawDate.toISOString().slice(0, 10);
+  return null;
+}
+
+function claimStatusKeyFromCnLabel(txt) {
+  const t = String(txt || '').trim();
+  if (!t) return 'pending';
+  const byLabel = CLAIM_STATUS.find((s) => s.label === t);
+  if (byLabel) return byLabel.key;
+  const byKey = CLAIM_STATUS.find((s) => s.key === t);
+  if (byKey) return byKey.key;
+  return 'pending';
+}
+
+/** 导出格式「每日记录」：表头含 日期、星期、动态痛苦列、「用药」「大便」「摘要」 */
+function parseAppExportedDailySheet(ws) {
+  const daily = [];
+  if (!ws || !ws['!ref']) return daily;
+  const rows = XLSX.utils.sheet_to_json(ws, { header: 1, raw: true, defval: '' });
+  if (!rows.length) return daily;
+
+  let headerRow = -1;
+  for (let i = 0; i < Math.min(rows.length, 20); i++) {
+    const cells = rows[i] || [];
+    const labels = cells.map((c) => String(c).trim());
+    if (labels.includes('日期') && (labels.includes('摘要') || labels.includes('用药'))) {
+      headerRow = i;
+      break;
+    }
+  }
+  if (headerRow < 0) return daily;
+
+  const headers = rows[headerRow].map((c) => String(c).trim());
+  const col = (lab) => headers.findIndex((h) => h === lab);
+  const iDate = col('日期');
+  const iWeek = col('星期');
+  const iMedsJoined = col('用药');
+  const iBowel = col('大便');
+  const iSummary = col('摘要');
+  if (iDate < 0 || iMedsJoined < 0) return daily;
+
+  const painLabelToMeta = {};
+  getAllPainParts().forEach((p) => {
+    painLabelToMeta[p.label] = p.key;
+    painLabelToMeta[p.key] = p.key;
+  });
+
+  const painCols = [];
+  const lo = iWeek >= 0 ? iWeek + 1 : iDate + 1;
+  for (let c = lo; c < iMedsJoined; c++) {
+    const lab = headers[c];
+    if (!lab) continue;
+    painCols.push({ col: c, key: painLabelToMeta[lab] || lab });
+  }
+
+  const medLabels = {};
+  getAllMedItems().forEach((m) => {
+    medLabels[m.label] = m.key;
+  });
+
+  for (let r = headerRow + 1; r < rows.length; r++) {
+    const row = rows[r];
+    if (!row || !row.length) continue;
+    const iso = parseXlsxDateCell(row[iDate]);
+    if (!iso) continue;
+
+    const pains = {};
+    for (const { col: ci, key } of painCols) {
+      const p = parsePainText(row[ci]);
+      if (p !== null && p > 0) pains[key] = Math.round(p);
+    }
+
+    const meds = {};
+    const customMeds = [];
+    const medsStr = String(row[iMedsJoined] || '');
+    medsStr
+      .split(/[,，、\n]/g)
+      .map((s) => s.trim())
+      .filter(Boolean)
+      .forEach((label) => {
+        const k = medLabels[label];
+        if (k) meds[k] = true;
+        else customMeds.push(label);
+      });
+
+    const bowel = iBowel >= 0 ? String(row[iBowel] || '').trim() : '';
+    const summary = iSummary >= 0 ? String(row[iSummary] || '').trim() : '';
+
+    if (
+      !summary
+      && !bowel
+      && !Object.keys(pains).length
+      && !Object.keys(meds).length
+      && !customMeds.length
+    ) continue;
+
+    daily.push({
+      id: uid(),
+      date: iso,
+      pains,
+      meds,
+      customMeds,
+      bowel,
+      summary,
+      tags: [],
+    });
+  }
+  return daily;
+}
+
+/** 导出格式「疫苗记录」：日期 · 疫苗名称 · 剂次 · 效期 · 接种地点 · 备注 */
+function parseAppExportedVaccinesSheet(ws) {
+  const list = [];
+  if (!ws || !ws['!ref']) return list;
+  const rows = XLSX.utils.sheet_to_json(ws, { header: 1, raw: true, defval: '' });
+  if (rows.length < 2) return list;
+  const h = rows[0].map((c) => String(c).trim());
+  const ix = {
+    date: h.indexOf('日期'),
+    name: h.indexOf('疫苗名称'),
+    dose: h.indexOf('剂次'),
+    duration: h.indexOf('效期'),
+    location: h.indexOf('接种地点'),
+    notes: h.indexOf('备注'),
+  };
+  if (ix.date < 0 || ix.name < 0) return list;
+
+  for (let r = 1; r < rows.length; r++) {
+    const row = rows[r];
+    if (!row || !row.length) continue;
+    const iso = parseXlsxDateCell(row[ix.date]);
+    const name = ix.name >= 0 ? String(row[ix.name] || '').trim() : '';
+    if (!iso || !name) continue;
+    list.push({
+      id: uid(),
+      date: iso,
+      name,
+      dose: ix.dose >= 0 ? String(row[ix.dose] || '').trim() : '',
+      duration: ix.duration >= 0 ? String(row[ix.duration] || '').trim() : '',
+      location: ix.location >= 0 ? String(row[ix.location] || '').trim() : '',
+      notes: ix.notes >= 0 ? String(row[ix.notes] || '').trim() : '',
+    });
+  }
+  return list;
+}
+
+/** 导出格式「看诊记录」 */
+function parseAppExportedVisitsSheet(ws) {
+  const list = [];
+  if (!ws || !ws['!ref']) return list;
+  const rows = XLSX.utils.sheet_to_json(ws, { header: 1, raw: true, defval: '' });
+  if (rows.length < 2) return list;
+  const h = rows[0].map((c) => String(c).trim());
+  const ix = {
+    date: h.indexOf('日期'),
+    clinic: h.indexOf('科室'),
+    doctor: h.indexOf('医师'),
+    summary: h.indexOf('看诊小结'),
+    prescription: h.indexOf('用药/处置'),
+    followUp: h.indexOf('回诊'),
+  };
+  if (ix.date < 0 || ix.clinic < 0) return list;
+
+  for (let r = 1; r < rows.length; r++) {
+    const row = rows[r];
+    if (!row || !row.length) continue;
+    const iso = parseXlsxDateCell(row[ix.date]);
+    const clinic = String(row[ix.clinic] || '').trim();
+    if (!iso || !clinic) continue;
+    list.push({
+      id: uid(),
+      date: iso,
+      clinic,
+      doctor: ix.doctor >= 0 ? String(row[ix.doctor] || '').trim() : '',
+      summary: ix.summary >= 0 ? String(row[ix.summary] || '').trim() : '',
+      prescription: ix.prescription >= 0 ? String(row[ix.prescription] || '').trim() : '',
+      followUp: ix.followUp >= 0 ? String(row[ix.followUp] || '').trim() : '',
+    });
+  }
+  return list;
+}
+
+/** 导出格式「理赔记录」——状态列为中文标签，需换回 key */
+function parseAppExportedClaimsSheet(ws) {
+  const list = [];
+  if (!ws || !ws['!ref']) return list;
+  const rows = XLSX.utils.sheet_to_json(ws, { header: 1, raw: true, defval: '' });
+  if (rows.length < 2) return list;
+  const h = rows[0].map((c) => String(c).trim());
+  const ix = {
+    date: h.indexOf('日期'),
+    insurer: h.indexOf('保险'),
+    type: h.indexOf('类型'),
+    amount: h.indexOf('金额'),
+    status: h.indexOf('状态'),
+    description: h.indexOf('说明'),
+  };
+  if (ix.date < 0 || ix.insurer < 0 || ix.amount < 0) return list;
+
+  for (let r = 1; r < rows.length; r++) {
+    const row = rows[r];
+    if (!row || !row.length) continue;
+    const iso = parseXlsxDateCell(row[ix.date]);
+    const insurer = String(row[ix.insurer] || '').trim();
+    const rawAmt = row[ix.amount];
+    if (!iso || !insurer || rawAmt == null || rawAmt === '') continue;
+    const amount = typeof rawAmt === 'number'
+      ? rawAmt
+      : parseFloat(String(rawAmt).replace(/[^\d.\-]/g, ''));
+    if (!amount || !isFinite(amount)) continue;
+    list.push({
+      id: uid(),
+      date: iso,
+      insurer,
+      type: ix.type >= 0 ? String(row[ix.type] || '').trim() : '',
+      amount,
+      description: ix.description >= 0 ? String(row[ix.description] || '').trim() : '',
+      status: claimStatusKeyFromCnLabel(ix.status >= 0 ? row[ix.status] : ''),
+    });
+  }
+  return list;
+}
+
+/** 单片：旧「就医头痛记录表」同款（单列 / 单行表头）；不含本 App 多 sheet 导出 */
+function parseLegacySingleSheet(ws) {
+  const out = { daily: [], vaccines: [], visits: [], claims: [] };
+  if (!ws || !ws['!ref']) return out;
+  const rows = XLSX.utils.sheet_to_json(ws, { header: 1, raw: true, defval: '' });
+  if (!rows.length) return out;
+
+  let headerRow = -1;
+  for (let i = 0; i < Math.min(rows.length, 6); i++) {
+    if (rows[i].some((c) => String(c).trim() === '日期')) {
+      headerRow = i;
+      break;
+    }
+  }
+  if (headerRow < 0) return out;
+
+  const headers = rows[headerRow].map((c) => String(c).trim());
+  const colOf = (label) => headers.findIndex((h) => h === label);
+
+  const idx = {
+    date: colOf('日期'),
+    week: colOf('星期'),
+    vaccine: colOf('疫苗'),
+    headache: colOf('头痛'),
+    back: colOf('腰背痛'),
+    tail: colOf('尾骨'),
+    mood: colOf('情绪'),
+    tookMed: colOf('吃药'),
+    liFeiYa: colOf('利飞亚'),
+    luoShaTeng: colOf('罗莎疼'),
+    coldMed: colOf('感冒药'),
+    bowel: colOf('大便'),
+    ointment: colOf('清凉药膏'),
+    summary: colOf('摘要'),
+    tcm: colOf('中医'),
+    ent: colOf('耳鼻'),
+    dental: colOf('牙科'),
+    eye: colOf('眼科'),
+    thyroid: colOf('甲状'),
+    rehab: colOf('复健'),
+    neuro: colOf('神内'),
+    gyn: colOf('妇产'),
+    breast: colOf('乳房'),
+    surg: colOf('外科'),
+    gi: colOf('胃肠'),
+    chest: colOf('胸腔'),
+    psych: colOf('身心'),
+    nanshan: colOf('南山理赔'),
+    global: colOf('全球理赔'),
+    health: colOf('健保局'),
+  };
+
+  const clinicMap = [
+    ['tcm', '中医'],
+    ['ent', '耳鼻'],
+    ['dental', '牙科'],
+    ['eye', '眼科'],
+    ['thyroid', '甲状'],
+    ['rehab', '复健'],
+    ['neuro', '神内'],
+    ['gyn', '妇产'],
+    ['breast', '乳房'],
+    ['surg', '外科'],
+    ['gi', '胃肠'],
+    ['chest', '胸腔'],
+    ['psych', '身心'],
+  ];
+
+  for (let r = headerRow + 1; r < rows.length; r++) {
+    const row = rows[r];
+    if (!row || !row.length) continue;
+    const rawDate = row[idx.date];
+    const iso = parseXlsxDateCell(rawDate);
+    if (!iso) continue;
+
+    const vac = row[idx.vaccine];
+    if (vac && String(vac).trim() && idx.vaccine >= 0) {
+      out.vaccines.push({
+        id: uid(),
+        date: iso,
+        name: String(vac).trim(),
+        dose: '',
+        duration: '',
+        location: '',
+        notes: '',
+      });
+    }
+
+    const summary = idx.summary >= 0 ? String(row[idx.summary] || '').trim() : '';
+    const pains = {};
+    const setPain = (key, colIndex) => {
+      if (colIndex < 0) return;
+      const p = parsePainText(row[colIndex]);
+      if (p !== null && p > 0) pains[key] = Math.round(p);
+    };
+    setPain('headache', idx.headache);
+    setPain('backPain', idx.back);
+    setPain('tailbone', idx.tail);
+    setPain('mood', idx.mood);
+
+    const meds = {};
+    const setMed = (key, colIndex) => {
+      if (colIndex < 0) return;
+      const v = row[colIndex];
+      if (v != null && String(v).trim() && String(v).trim() !== '0') meds[key] = true;
+    };
+    setMed('liFeiYa', idx.liFeiYa);
+    setMed('luoShaTeng', idx.luoShaTeng);
+    setMed('coldMed', idx.coldMed);
+    setMed('ointment', idx.ointment);
+
+    const bowel = idx.bowel >= 0 ? String(row[idx.bowel] || '').trim() : '';
+
+    if (summary || Object.keys(pains).length || Object.keys(meds).length || bowel) {
+      out.daily.push({
+        id: uid(),
+        date: iso,
+        pains,
+        meds,
+        customMeds: [],
+        bowel,
+        summary,
+        tags: [],
+      });
+    }
+
+    for (const [k, name] of clinicMap) {
+      const c = idx[k];
+      if (c < 0) continue;
+      const txt = String(row[c] || '').trim();
+      if (!txt) continue;
+      out.visits.push({
+        id: uid(),
+        date: iso,
+        clinic: name,
+        doctor: '',
+        summary: txt,
+        prescription: '',
+        followUp: '',
+      });
+    }
+
+    const addClaim = (colIndex, insurer) => {
+      if (colIndex < 0) return;
+      const v = row[colIndex];
+      if (v == null || v === '') return;
+      const amt = parseFloat(String(v).replace(/[^\d.\-]/g, ''));
+      if (!amt || !isFinite(amt)) return;
+      out.claims.push({
+        id: uid(),
+        date: iso,
+        insurer,
+        type: '',
+        amount: amt,
+        description: '',
+        status: 'paid',
+      });
+    };
+    addClaim(idx.nanshan, '南山');
+    addClaim(idx.global, '全球');
+    addClaim(idx.health, '健保局');
+  }
+
+  return out;
+}
+
+/**
+ * 合并：优先按工作表名称读取「本 App 导出」四表；
+ * 其余工作表仍尝试旧 Excel 单列格式。
+ */
+function parseImportedWorkbook(wb) {
+  const out = { daily: [], vaccines: [], visits: [], claims: [] };
+  const names = wb.SheetNames || [];
+  const handled = new Set();
+
+  const findSn = (...titles) => {
+    const normTitles = titles.map(xlsxNormalizeSheetTitle);
+    for (let ti = 0; ti < titles.length; ti++) {
+      const n = names.find(
+        (sn) => sn === titles[ti] || xlsxNormalizeSheetTitle(sn) === normTitles[ti],
+      );
+      if (n) return n;
+    }
+    return null;
+  };
+
+  const snDaily = findSn('每日记录');
+  if (snDaily) {
+    out.daily = parseAppExportedDailySheet(wb.Sheets[snDaily]);
+    handled.add(snDaily);
+  }
+  const snVac = findSn('疫苗记录');
+  if (snVac) {
+    out.vaccines = parseAppExportedVaccinesSheet(wb.Sheets[snVac]);
+    handled.add(snVac);
+  }
+  const snVis = findSn('看诊记录');
+  if (snVis) {
+    out.visits = parseAppExportedVisitsSheet(wb.Sheets[snVis]);
+    handled.add(snVis);
+  }
+  const snClm = findSn('理赔记录');
+  if (snClm) {
+    out.claims = parseAppExportedClaimsSheet(wb.Sheets[snClm]);
+    handled.add(snClm);
+  }
+
+  for (const sn of names) {
+    if (handled.has(sn)) continue;
     const ws = wb.Sheets[sn];
     if (!ws || !ws['!ref']) continue;
-    const rows = XLSX.utils.sheet_to_json(ws, { header: 1, raw: true, defval: '' });
-    if (!rows.length) continue;
-
-    // Find header row (contains 日期)
-    let headerRow = -1;
-    for (let i = 0; i < Math.min(rows.length, 6); i++) {
-      if (rows[i].some(c => String(c).trim() === '日期')) { headerRow = i; break; }
+    const probeRows = XLSX.utils.sheet_to_json(ws, { header: 1, raw: true, defval: '' });
+    if (!probeRows.length) continue;
+    let hdrLine = null;
+    for (let i = 0; i < Math.min(probeRows.length, 20); i++) {
+      const rr = probeRows[i];
+      if (rr && rr.some((c) => String(c).trim() === '日期')) {
+        hdrLine = rr.map((c) => String(c).trim());
+        break;
+      }
     }
-    if (headerRow < 0) continue;
-
-    const headers = rows[headerRow].map(c => String(c).trim());
-    const colOf = (label) => headers.findIndex(h => h === label);
-
-    const idx = {
-      date:     colOf('日期'),
-      week:     colOf('星期'),
-      vaccine:  colOf('疫苗'),
-      headache: colOf('头痛'),
-      back:     colOf('腰背痛'),
-      tail:     colOf('尾骨'),
-      mood:     colOf('情绪'),
-      tookMed:  colOf('吃药'),
-      liFeiYa:  colOf('利飞亚'),
-      luoShaTeng: colOf('罗莎疼'),
-      coldMed:  colOf('感冒药'),
-      bowel:    colOf('大便'),
-      ointment: colOf('清凉药膏'),
-      summary:  colOf('摘要'),
-      // clinics
-      tcm:      colOf('中医'),
-      ent:      colOf('耳鼻'),
-      dental:   colOf('牙科'),
-      eye:      colOf('眼科'),
-      thyroid:  colOf('甲状'),
-      rehab:    colOf('复健'),
-      neuro:    colOf('神内'),
-      gyn:      colOf('妇产'),
-      breast:   colOf('乳房'),
-      surg:     colOf('外科'),
-      gi:       colOf('胃肠'),
-      chest:    colOf('胸腔'),
-      psych:    colOf('身心'),
-      // insurance
-      nanshan:  colOf('南山理赔'),
-      global:   colOf('全球理赔'),
-      health:   colOf('健保局'),
-    };
-
-    const clinicMap = [
-      ['tcm', '中医'], ['ent', '耳鼻'], ['dental','牙科'], ['eye','眼科'],
-      ['thyroid','甲状'], ['rehab','复健'], ['neuro','神内'], ['gyn','妇产'],
-      ['breast','乳房'], ['surg','外科'], ['gi','胃肠'], ['chest','胸腔'],
-      ['psych','身心']
-    ];
-
-    for (let r = headerRow + 1; r < rows.length; r++) {
-      const row = rows[r];
-      if (!row || !row.length) continue;
-      const rawDate = row[idx.date];
-      let iso = null;
-      if (typeof rawDate === 'number') iso = excelSerialToISO(rawDate);
-      else if (typeof rawDate === 'string' && /^\d{4}-\d{2}-\d{2}/.test(rawDate)) iso = rawDate.slice(0,10);
-      else if (rawDate instanceof Date) iso = rawDate.toISOString().slice(0,10);
-      if (!iso) continue;
-
-      // ---- Vaccine row ----
-      const vac = row[idx.vaccine];
-      if (vac && String(vac).trim() && idx.vaccine >= 0) {
-        out.vaccines.push({
-          id: uid(), date: iso, name: String(vac).trim(),
-          dose: '', duration: '', location: '', notes: ''
-        });
-      }
-
-      // ---- Daily log ----
-      const summary = idx.summary >= 0 ? String(row[idx.summary] || '').trim() : '';
-      const pains = {};
-      const setPain = (key, col) => {
-        if (col < 0) return;
-        const p = parsePainText(row[col]);
-        if (p !== null && p > 0) pains[key] = Math.round(p);
-      };
-      setPain('headache', idx.headache);
-      setPain('backPain', idx.back);
-      setPain('tailbone', idx.tail);
-      setPain('mood',     idx.mood);
-
-      const meds = {};
-      const setMed = (key, col) => {
-        if (col < 0) return;
-        const v = row[col];
-        if (v != null && String(v).trim() && String(v).trim() !== '0') meds[key] = true;
-      };
-      setMed('liFeiYa',    idx.liFeiYa);
-      setMed('luoShaTeng', idx.luoShaTeng);
-      setMed('coldMed',    idx.coldMed);
-      setMed('ointment',   idx.ointment);
-
-      const bowel = idx.bowel >= 0 ? String(row[idx.bowel] || '').trim() : '';
-
-      // Only create a daily record if there is some signal
-      if (summary || Object.keys(pains).length || Object.keys(meds).length || bowel) {
-        out.daily.push({
-          id: uid(), date: iso,
-          pains, meds, customMeds: [],
-          bowel, summary, tags: []
-        });
-      }
-
-      // ---- Visits per clinic column ----
-      for (const [k, name] of clinicMap) {
-        const c = idx[k];
-        if (c < 0) continue;
-        const txt = String(row[c] || '').trim();
-        if (!txt) continue;
-        out.visits.push({
-          id: uid(), date: iso, clinic: name, doctor: '',
-          summary: txt, prescription: '', followUp: ''
-        });
-      }
-
-      // ---- Claims ----
-      const addClaim = (col, insurer) => {
-        if (col < 0) return;
-        const v = row[col];
-        if (v == null || v === '') return;
-        const amt = parseFloat(String(v).replace(/[^\d.\-]/g, ''));
-        if (!amt || !isFinite(amt)) return;
-        out.claims.push({
-          id: uid(), date: iso, insurer, type: '',
-          amount: amt, description: '', status: 'paid'
-        });
-      };
-      addClaim(idx.nanshan, '南山');
-      addClaim(idx.global,  '全球');
-      addClaim(idx.health,  '健保局');
+    /* 以下判断用于：工作表被改名或未按原名识别时，仍可按导出列头识别 */
+    if (
+      hdrLine
+      && hdrLine.includes('星期')
+      && hdrLine.includes('用药')
+      && hdrLine.includes('摘要')
+      && !hdrLine.includes('疫苗名称')
+      && !hdrLine.includes('南山理赔')
+    ) {
+      out.daily.push(...parseAppExportedDailySheet(ws));
+      continue;
     }
+    if (
+      hdrLine
+      && hdrLine.includes('疫苗名称')
+      && hdrLine.includes('接种地点')
+    ) {
+      out.vaccines.push(...parseAppExportedVaccinesSheet(ws));
+      continue;
+    }
+    if (
+      hdrLine
+      && hdrLine.includes('科室')
+      && hdrLine.includes('看诊小结')
+    ) {
+      out.visits.push(...parseAppExportedVisitsSheet(ws));
+      continue;
+    }
+    if (
+      hdrLine
+      && hdrLine.includes('保险')
+      && hdrLine.includes('金额')
+      && hdrLine.includes('状态')
+    ) {
+      out.claims.push(...parseAppExportedClaimsSheet(ws));
+      continue;
+    }
+    const chunk = parseLegacySingleSheet(ws);
+    out.daily.push(...chunk.daily);
+    out.vaccines.push(...chunk.vaccines);
+    out.visits.push(...chunk.visits);
+    out.claims.push(...chunk.claims);
   }
 
   return out;
