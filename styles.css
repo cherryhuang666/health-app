@@ -3,6 +3,8 @@ html, body {
   -webkit-tap-highlight-color: transparent;
   text-size-adjust: 100%;
   -webkit-text-size-adjust: 100%;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
 }
 
 /* 字号（与 app 里「更多」三档一致） */
@@ -289,16 +291,16 @@ html[data-font-scale="xlarge"] {
 /* Calendar heatmap */
 .heatmap-dashboard-wrap .heatmap-wd-row,
 .heatmap-dashboard-wrap .heatmap {
-  gap: 2px;
+  gap: 3px;
 }
 .heatmap-dashboard-wrap .heatmap-wd-row {
   margin-bottom: 3px;
 }
 .heatmap-dashboard-wrap .heatmap-wd {
-  font-size: 0.58rem;
+  font-size: 0.68rem;
 }
 .heatmap-dashboard-wrap .heatmap-cell {
-  font-size: 0.62rem;
+  font-size: 0.76rem;
   border-radius: 4px;
 }
 .heatmap-dashboard-wrap .heatmap-cell:hover {
@@ -328,12 +330,13 @@ html[data-font-scale="xlarge"] {
   display: flex;
   align-items: center;
   justify-content: center;
-  font-size: 0.78rem;
+  font-size: 0.875rem;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
   color: #94a3b8;
   cursor: pointer;
   transition: transform 0.08s ease, box-shadow 0.12s ease;
   position: relative;
-  white-space: pre-line;
 }
 .heatmap-cell:hover {
   transform: scale(1.06);

@@ -1712,13 +1712,8 @@ function renderHeatmap(opts = { mode: 'compact' }) {
       cls += ' is-past-empty';
     }
     if (isToday) cls += ' is-today';
-    return `
-      <div class="${cls}"
-           title="${escapeHtml(tip)}"
-           data-action="open-day" data-date="${iso}">
-        ${d.getDate()}
-      </div>
-    `;
+    /* 单行紧凑 HTML，避免 div 内空白文本节点把数字顶偏 */
+    return `<div class="${cls}" title="${escapeHtml(tip)}" data-action="open-day" data-date="${iso}">${d.getDate()}</div>`;
   }
 
   if (opts.mode === 'month') {
