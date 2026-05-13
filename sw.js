@@ -1,9 +1,9 @@
 /* Service worker: cache app shell for offline use */
-const CACHE = 'health-app-v1';
+const CACHE = 'health-app-v2';
 const ASSETS = [
   './',
   './index.html',
-  './app.js',
+  './app.js?v=20260513',
   './styles.css',
   './manifest.json'
 ];

@@ -226,26 +226,50 @@ function formatDateISOLocal(d) {
   return `${y}-${m}-${day}`;
 }
 
+/** 日历字符串统一成 YYYY-MM-DD（与 Flatpickr / 热力图一致；不做时区换算）。 */
+function normalizeCalendarDateKey(s) {
+  const t = String(s || '').trim();
+  const m = t.match(/^(\d{4})\s*[-/.]\s*(\d{1,2})\s*[-/.]\s*(\d{1,2})/);
+  if (!m) return t;
+  return `${m[1]}-${String(+m[2]).padStart(2, '0')}-${String(+m[3]).padStart(2, '0')}`;
+}
+
+/**
+ * 把 YYYY-MM-DD（或 2026/5/11）解析为本地当日 0 点。
+ * 禁止依赖 new Date('yyyy-mm-dd')：规范按 UTC 午夜解析，会与本地日历差一天。
+ */
+function parseCalendarDateLocal(s) {
+  const key = normalizeCalendarDateKey(s);
+  const m = key.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!m) return new Date(NaN);
+  return _atMidnight(new Date(+m[1], +m[2] - 1, +m[3]));
+}
+
 function todayStr() {
   return formatDateISOLocal(new Date());
 }
 
 function fmtDate(iso) {
   if (!iso) return '';
-  const d = new Date(iso);
-  if (isNaN(d)) return iso;
+  const d = parseCalendarDateLocal(iso);
+  if (isNaN(d.getTime())) return String(iso);
   return `${d.getFullYear()}年${d.getMonth() + 1}月${d.getDate()}日`;
 }
 
 function fmtDateLong(iso) {
   if (!iso) return '';
-  const d = new Date(iso);
-  if (isNaN(d)) return iso;
+  const d = parseCalendarDateLocal(iso);
+  if (isNaN(d.getTime())) return String(iso);
   const week = ['日','一','二','三','四','五','六'][d.getDay()];
   return `${d.getFullYear()}年${d.getMonth()+1}月${d.getDate()}日 周${week}`;
 }
 
 function daysBetween(a, b) {
+  const da = parseCalendarDateLocal(a);
+  const db = parseCalendarDateLocal(b);
+  if (!isNaN(da.getTime()) && !isNaN(db.getTime())) {
+    return Math.round((db - da) / 86400000);
+  }
   const ms = new Date(b) - new Date(a);
   return Math.round(ms / 86400000);
 }
@@ -315,12 +339,12 @@ function excelSerialToISO(n) {
 /* =====================================================================
  * Appointment / follow-up date parser
  * Extracts Chinese date phrases from free-text notes:
- *   - 绝对：2024年11月1日 / 11月1日 / 11/1 / 11月1号
+ *   - 绝对：2024年11月1日 / 11月1日 / 11/1 / 11.1 / 11-1 / 11月1号
  *   - 相对：半年后追踪 / 一年后回诊 / 两年追踪 / 3个月后 / 2周后 / 10天后
  * Relative dates are computed against the note's own date (baseDateISO).
  * ===================================================================== */
 
-const APPT_KEYWORDS = /(复诊|回诊|追踪|预约|挂号|约诊|约门诊|看诊|看[\u4e00-\u9fa5]{1,3}科|大肠镜|胃镜|做手术|手术|检查|穿刺|抽血|拿药|开药|监测|超音波|超声|看报告|拿报告|拍片|核磁|CT|MRI|X光|拍X|心电图|体检|疫苗|打疫苗|追加疫苗|换药|拆线)/i;
+const APPT_KEYWORDS = /(复诊|会诊|回诊|追踪|预约|挂号|约诊|约门诊|看诊|看[\u4e00-\u9fa5]{1,3}科|大肠镜|胃镜|做手术|手术|检查|穿刺|抽血|拿药|开药|监测|超音波|超声|看报告|拿报告|拍片|核磁|CT|MRI|X光|拍X|心电图|体检|疫苗|打疫苗|追加疫苗|换药|拆线)/i;
 
 const CN_NUM = { '零':0,'一':1,'二':2,'两':2,'三':3,'四':4,'五':5,'六':6,'七':7,'八':8,'九':9,'十':10 };
 function _parseCnOrArabicNum(s) {
@@ -363,7 +387,7 @@ function _atMidnight(d) {
  * @param {string|null} anchorISO  记录的日期 yyyy-mm-dd（日记日 / 看诊日）；无则用今天
  */
 function resolveMonthDayAgainstAnchor(month0, dom, anchorISO) {
-  const anchor = anchorISO ? _atMidnight(new Date(anchorISO)) : _atMidnight(new Date());
+  const anchor = anchorISO ? parseCalendarDateLocal(anchorISO) : _atMidnight(new Date());
   if (isNaN(anchor.getTime())) return null;
   let y = anchor.getFullYear();
   let cand = _atMidnight(new Date(y, month0, dom));
@@ -389,7 +413,7 @@ function parseAppointmentDate(text, baseDateISO, requireKeyword = false) {
   if (requireKeyword && !APPT_KEYWORDS.test(t)) return null;
 
   const today = _atMidnight(new Date());
-  const base = baseDateISO ? _atMidnight(new Date(baseDateISO)) : today;
+  const base = baseDateISO ? parseCalendarDateLocal(baseDateISO) : today;
 
   // 1) Full date YYYY-MM-DD or YYYY年M月D[日号]?
   let m = t.match(/(\d{4})\s*[-年/.]\s*(\d{1,2})\s*[-月/.]\s*(\d{1,2})\s*[日号]?/);
@@ -407,18 +431,16 @@ function parseAppointmentDate(text, baseDateISO, requireKeyword = false) {
     }
   }
 
-  // 3) M/D （有关键词时）— 同上，相对记录日期推算年
-  if (APPT_KEYWORDS.test(t)) {
-    m = t.match(/(?:^|[^\d])(\d{1,2})\s*\/\s*(\d{1,2})(?!\d)/);
-    if (m) {
-      const month = +m[1] - 1, day = +m[2];
-      if (month >= 0 && month <= 11 && day >= 1 && day <= 31) {
-        return resolveMonthDayAgainstAnchor(month, day, baseDateISO || todayStr());
-      }
+  // 2b) "M/D" / "M.D" / "M-D" — 同「月日」年份对齐本条条目的日期（回诊安排可无关键词；看诊小结仍须先满足全文关键词）
+  m = t.match(/(?:^|[^\d])(\d{1,2})\s*[./-]\s*(\d{1,2})(?!\d)/);
+  if (m) {
+    const month = +m[1] - 1, day = +m[2];
+    if (month >= 0 && month <= 11 && day >= 1 && day <= 31) {
+      return resolveMonthDayAgainstAnchor(month, day, baseDateISO || todayStr());
     }
   }
 
-  // 4) Relative — only meaningful when the phrase also signals an appointment
+  // 3) Relative — only meaningful when the phrase also signals an appointment
   if (APPT_KEYWORDS.test(t) || /[后内再]\s*$/.test(t) || /(追踪|回诊|复诊)/.test(t)) {
     // 半年|一年|两年|X年
     m = t.match(/(半|[零一二两三四五六七八九十]+|\d+)\s*年\s*(?:后|内|再)?/);
@@ -501,7 +523,7 @@ function extractUpcomingReminders(horizonDays = UPCOMING_REMINDER_HORIZON_DAYS) 
   const seen = new Set();
   const deduped = [];
   for (const r of filtered.sort((a, b) => a.date - b.date)) {
-    const key = r.date.toISOString().slice(0, 10) + '|' +
+    const key = formatDateISOLocal(r.date) + '|' +
                 (r.text || '').replace(/\s+/g, '').slice(0, 30);
     if (seen.has(key)) continue;
     seen.add(key);
@@ -542,7 +564,7 @@ function generateDoctorReportBrief() {
   if (upcoming.length) {
     lines.push('① 近期安排在记录里写过的时间点（可把这几句先念给医生）：');
     upcoming.forEach(r => {
-      const iso = r.date.toISOString().slice(0, 10);
+      const iso = formatDateISOLocal(r.date);
       const dept = r.clinic ? findClinic(r.clinic).label : '';
       const when = `${fmtDate(iso)}（${relativeDayLabel(r.date).text}）`;
       const snippet = String(r.text || '').replace(/\s+/g, ' ').trim();
@@ -1069,7 +1091,8 @@ function removeById(collection, id) {
 }
 
 function getDailyByDate(date) {
-  return state.daily.find(d => d.date === date);
+  const key = normalizeCalendarDateKey(date);
+  return state.daily.find(d => normalizeCalendarDateKey(d.date) === key);
 }
 
 /* ---------- 5. ROUTING ---------- */
@@ -1204,7 +1227,11 @@ function renderDashboard(container, ctx = {}) {
   const pendingClaims = state.claims.filter(c => c.status !== 'paid' && c.status !== 'denied');
   const pendingAmount = pendingClaims.reduce((s, c) => s + (Number(c.amount) || 0), 0);
   const paidAmountYear = state.claims
-    .filter(c => c.status === 'paid' && new Date(c.date).getFullYear() === new Date().getFullYear())
+    .filter(c => {
+      if (c.status !== 'paid') return false;
+      const pd = parseCalendarDateLocal(c.date);
+      return !isNaN(pd.getTime()) && pd.getFullYear() === new Date().getFullYear();
+    })
     .reduce((s, c) => s + (Number(c.amount) || 0), 0);
 
   // Last vaccine
@@ -1563,11 +1590,12 @@ function onDashboardPageContainerClick(e) {
 }
 
 function openDayDetailModal(dateISO) {
-  const log = getDailyByDate(dateISO);
-  const dt = _atMidnight(new Date(dateISO));
+  const key = normalizeCalendarDateKey(dateISO);
+  const log = getDailyByDate(key);
+  const dt = parseCalendarDateLocal(key);
   const today = _atMidnight(new Date());
-  const isFuture = dt > today;
-  const isToday  = dt.getTime() === today.getTime();
+  const isFuture = !isNaN(dt.getTime()) && dt > today;
+  const isToday  = !isNaN(dt.getTime()) && dt.getTime() === today.getTime();
 
   let body;
   const hasAny = log && (
@@ -1586,9 +1614,9 @@ function openDayDetailModal(dateISO) {
     `;
   } else {
     // Also surface any visits / vaccines / claims on that day for context
-    const dayVisits   = state.visits.filter(v => v.date === dateISO);
-    const dayVaccines = state.vaccines.filter(v => v.date === dateISO);
-    const dayClaims   = state.claims.filter(c => c.date === dateISO);
+    const dayVisits   = state.visits.filter(v => normalizeCalendarDateKey(v.date) === key);
+    const dayVaccines = state.vaccines.filter(v => normalizeCalendarDateKey(v.date) === key);
+    const dayClaims   = state.claims.filter(c => normalizeCalendarDateKey(c.date) === key);
 
     body = `
       <div class="space-y-3">
@@ -1628,12 +1656,12 @@ function openDayDetailModal(dateISO) {
     buttons.push({
       label: log ? '编辑' : '添加记录',
       class: 'btn-primary',
-      onClick: () => { closeModal(); navigate('dailyEdit', { date: dateISO }); }
+      onClick: () => { closeModal(); navigate('dailyEdit', { date: key }); }
     });
   }
   buttons.push({ label: '关闭', class: 'btn-ghost', onClick: closeModal });
 
-  openModal(fmtDateLong(dateISO), body, buttons);
+  openModal(fmtDateLong(key), body, buttons);
 }
 
 function renderDailySummary(log) {
@@ -1765,7 +1793,7 @@ function openLast30StatSummary(stat) {
     const rows = in30daily.filter(d => (d.pains?.headache || 0) > 0);
     subtitle = `共 ${rows.length} 天 · 点此打开当日详情`;
     rowsHtml = rows.length ? rows.map(d => `
-      <button type="button" class="w-full text-left p-3 hover:bg-slate-50 border-b border-slate-100 last:border-0 flex flex-col gap-1 heat-stat-row" data-detail-date="${d.date}">
+      <button type="button" class="w-full text-left p-3 hover:bg-slate-50 border-b border-slate-100 last:border-0 flex flex-col gap-1 heat-stat-row" data-detail-date="${escapeHtml(normalizeCalendarDateKey(d.date))}">
         <div class="flex justify-between gap-2">
           <span class="font-semibold text-sm">${escapeHtml(fmtDate(d.date))}</span>
           <span class="${painClass(d.pains?.headache || 0)} text-xs">${d.pains?.headache || 0} 度</span>
@@ -1786,7 +1814,7 @@ function openLast30StatSummary(stat) {
         ...(d.customMeds || [])
       ];
       return `
-      <button type="button" class="w-full text-left p-3 hover:bg-slate-50 border-b border-slate-100 last:border-0 heat-stat-row" data-detail-date="${d.date}">
+      <button type="button" class="w-full text-left p-3 hover:bg-slate-50 border-b border-slate-100 last:border-0 heat-stat-row" data-detail-date="${escapeHtml(normalizeCalendarDateKey(d.date))}">
         <div class="font-semibold text-sm mb-1">${escapeHtml(fmtDate(d.date))}</div>
         <div class="text-xs text-slate-600">${escapeHtml(names.join('、') || '（已勾选）')}</div>
         ${d.summary ? `<div class="text-xs text-slate-500 mt-1 line-clamp-2">${escapeHtml(d.summary)}</div>` : ''}
@@ -1860,7 +1888,8 @@ function openLast30StatSummary(stat) {
 function renderDailyList(container) {
   const months = {};
   state.daily.forEach(d => {
-    const m = (d.date || '').slice(0, 7);
+    const nk = normalizeCalendarDateKey(d.date);
+    const m = /^\d{4}-\d{2}/.test(nk) ? nk.slice(0, 7) : (d.date || '').slice(0, 7);
     if (!months[m]) months[m] = [];
     months[m].push(d);
   });
@@ -1882,11 +1911,11 @@ function renderDailyList(container) {
         <div class="text-xs text-slate-500 font-semibold mb-2 mt-3">${m.replace('-', '年')}月</div>
         <div class="card divide-y divide-slate-100">
           ${months[m].map(d => `
-            <div class="p-3 cursor-pointer hover:bg-slate-50" data-action="edit-day" data-date="${d.date}">
+            <div class="p-3 cursor-pointer hover:bg-slate-50" data-action="edit-day" data-date="${escapeHtml(normalizeCalendarDateKey(d.date))}">
               <div class="flex items-center justify-between">
                 <div class="flex items-center gap-2 min-w-0">
                   <span class="text-sm font-semibold whitespace-nowrap">${fmtDate(d.date)}</span>
-                  <span class="text-xs text-slate-400">周${['日','一','二','三','四','五','六'][new Date(d.date).getDay()]}</span>
+                  <span class="text-xs text-slate-400">周${['日','一','二','三','四','五','六'][(() => { const x = parseCalendarDateLocal(d.date); return isNaN(x.getTime()) ? 0 : x.getDay(); })()]}</span>
                 </div>
                 <div class="flex items-center gap-1">
                   ${getAllPainParts().filter(p => d.pains?.[p.key] > 0).slice(0, 3).map(p =>
@@ -1913,7 +1942,7 @@ function renderDailyList(container) {
 /* ---------- 8. PAGE: DAILY EDIT ---------- */
 
 function renderDailyEdit(container, ctx) {
-  const date = ctx.date || todayStr();
+  const date = normalizeCalendarDateKey(ctx.date || todayStr());
   const existing = getDailyByDate(date);
   const log = existing ? JSON.parse(JSON.stringify(existing)) : {
     id: uid(),
@@ -2041,7 +2070,7 @@ function renderDailyEdit(container, ctx) {
       return;
     }
     if (action.dataset.action === 'save') {
-      log.date    = $('#logDate', container).value;
+      log.date    = normalizeCalendarDateKey($('#logDate', container).value);
       log.summary = $('#summary', container).value.trim();
       log.bowel   = $('#bowel',   container).value.trim();
       log.customMeds = $('#customMeds', container).value
@@ -2385,7 +2414,7 @@ function openVisitEditor(id) {
       </div>
       <div>
         <label class="label">回诊安排</label>
-        <input class="input" id="visitFollowUp" value="${escapeHtml(v.followUp)}" placeholder="例如：半年后追踪 / 11月1日大肠镜" />
+        <input class="input" id="visitFollowUp" value="${escapeHtml(v.followUp)}" placeholder="例如：半年后追踪 / 11月1日 / 11.1 / 11/1 / 11-1 大肠镜" />
       </div>
     </div>
   `, [
@@ -2920,8 +2949,10 @@ function openClaimEditor(id) {
 function renderAnalytics(container) {
   const today = todayStr();
   const range = currentContext.range || 90;
-  const cutoff = new Date(Date.now() - range * 86400000).toISOString().slice(0, 10);
-  const inRange = state.daily.filter(d => d.date >= cutoff).sort((a,b) => a.date.localeCompare(b.date));
+  const cutoff = formatDateISOLocal(new Date(Date.now() - range * 86400000));
+  const inRange = state.daily
+    .filter(d => normalizeCalendarDateKey(d.date) >= cutoff)
+    .sort((a,b) => a.date.localeCompare(b.date));
 
   // Average pain per part (covers built-in + custom + any historical key in logs)
   const allPainParts = getAllPainParts();
@@ -4182,7 +4213,8 @@ function exportToXlsx() {
       ...getAllMedItems().filter(m => d.meds?.[m.key]).map(m => m.label),
       ...(d.customMeds || [])
     ].join('、');
-    const week = ['日','一','二','三','四','五','六'][new Date(d.date).getDay()];
+    const wd = parseCalendarDateLocal(d.date);
+    const week = ['日','一','二','三','四','五','六'][isNaN(wd.getTime()) ? 0 : wd.getDay()];
     return [
       d.date, '周' + week,
       ...painCols.map(p => d.pains?.[p.key] || ''),
