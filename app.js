@@ -216,9 +216,18 @@ function uid() {
   return Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
 }
 
+/** 本地日历 YYYY-MM-DD（勿用 toISOString 取日期，UTC 会与东八区等产生差一天） */
+function formatDateISOLocal(d) {
+  const x = new Date(d);
+  if (isNaN(x.getTime())) return '';
+  const y = x.getFullYear();
+  const m = String(x.getMonth() + 1).padStart(2, '0');
+  const day = String(x.getDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
+}
+
 function todayStr() {
-  const d = new Date();
-  return d.toISOString().slice(0, 10);
+  return formatDateISOLocal(new Date());
 }
 
 function fmtDate(iso) {
@@ -1695,7 +1704,7 @@ function renderHeatmap(opts = { mode: 'compact' }) {
     }
     for (let dom = 1; dom <= lastDom; dom++) {
       const d = _atMidnight(new Date(y, m - 1, dom));
-      const iso = d.toISOString().slice(0, 10);
+      const iso = formatDateISOLocal(d);
       const isFuture = d > today;
       const isToday = d.getTime() === today.getTime();
       cells.push(oneCell(d, iso, isFuture, isToday));
@@ -1712,7 +1721,7 @@ function renderHeatmap(opts = { mode: 'compact' }) {
     while (start.getDay() !== 1) start = _addDays(start, -1);
     for (let d = new Date(start); d <= end; d = _addDays(d, 1)) {
       const dd = _atMidnight(d);
-      const iso = dd.toISOString().slice(0, 10);
+      const iso = formatDateISOLocal(dd);
       const isToday = dd.getTime() === today.getTime();
       cells.push(oneCell(dd, iso, false, isToday));
     }
