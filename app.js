@@ -74,6 +74,120 @@ const CLAIM_STATUS = [
   { key: 'denied',   label: '拒赔',   color: 'bg-red-100 text-red-700' },
 ];
 
+/* ---------- 1a. EMOJI PALETTES & 智能推荐 ---------- *
+ * 在"自定义身体问题 / 自定义科室"对话框里：
+ *   - 提供一个更大的备选 emoji 池（之前手腕痛这种没有合适的手部 emoji）
+ *   - 根据用户正在输入的名称，按关键词推荐几个相关 emoji
+ */
+
+const PAIN_EMOJI_PALETTE = [
+  // 状态/情绪
+  '🤕','😣','🥴','🤢','🤮','😪','🥶','🥵','💢','😖','😫','😩','🤒','🤧','😵','😵‍💫','🥱','😤','😰','🥺',
+  // 身体部位
+  '🧠','🫀','🫁','🦴','🦵','🦶','🦾','💪','👂','🦻','👁️','🦷','👃','👄','🫦','🤲','🖐️','✋','🤚','👋','🫳','🫴','🤏','☝️','👌',
+  // 其他
+  '🩸','💤','💦','🩹','🤰','🦠','💉','🌸','🎗️','🤍',
+];
+
+const CLINIC_EMOJI_PALETTE = [
+  '🏥','🏨','🩺','⚕️','💊','💉','🧪','🧬','🩻','🩹',
+  '🦷','👁️','👂','🦻','👃','🫀','🫁','🦴','🦵','🧠',
+  '🌿','🌸','🦋','🍽️','🔪','🤲','🧘','🦠','💪','🎗️',
+  '👶','🤰','🚑','🏠','💧','🥗','🩸',
+];
+
+/** 关键词 → 推荐 emoji。第一个匹配优先级最高，越靠前越相关。 */
+const PAIN_EMOJI_RULES = [
+  [/手腕|腕/, ['🤚','✋','🖐️']],
+  [/手指|指头|大拇指|拇指/, ['☝️','🤏','👌']],
+  [/手(?!术)|掌/, ['🖐️','✋','🤚','👋']],
+  [/肘|胳膊|手臂|臂膀|臂/, ['🦾','💪']],
+  [/肩/, ['💪','🦴']],
+  [/头|脑|偏头/, ['🤕','🧠','😖']],
+  [/腰|背/, ['🧎','🦴']],
+  [/颈|脖|喉咙|嗓子/, ['😣','🦴']],
+  [/胸|肺|呼吸/, ['🫁']],
+  [/心(脏|悸)/, ['🫀']],
+  [/肝|肾/, ['🫀']],
+  [/肚|腹|胃|消化/, ['🫃','🍽️']],
+  [/肛|痔/, ['😣']],
+  [/经期|月经|生理期|大姨妈/, ['🩸','🌸']],
+  [/乳/, ['🎗️','🤍']],
+  [/大腿|小腿|腿/, ['🦵']],
+  [/脚|足|踝/, ['🦶']],
+  [/膝/, ['🦵']],
+  [/骨|关节/, ['🦴']],
+  [/眼|目|视/, ['👁️']],
+  [/耳|听/, ['👂','🦻']],
+  [/牙|齿/, ['🦷']],
+  [/鼻|嗅/, ['👃','🤧']],
+  [/口|嘴|唇/, ['👄','🫦']],
+  [/皮|疹|痒|湿疹|过敏/, ['🤲']],
+  [/失眠|睡|入眠/, ['💤','😪']],
+  [/冷|寒|颤/, ['🥶']],
+  [/热|烧|发烧|烫/, ['🥵','🤒']],
+  [/吐|呕|恶心/, ['🤮','🤢']],
+  [/咳|嗽|痰/, ['🤧']],
+  [/乏|累|疲|倦/, ['😪']],
+  [/焦虑|抑郁|压力|情绪|心情/, ['🧠','😣']],
+  [/血|出血|流血/, ['🩸']],
+  [/汗|盗汗/, ['💦']],
+  [/晕|眩/, ['😵','😵‍💫']],
+  [/便秘|拉肚|腹泻|便/, ['💩']],
+  [/痛|疼|酸|麻|刺/, ['😣','💢']],
+];
+
+const CLINIC_EMOJI_RULES = [
+  [/妇|产/, ['🌸']],
+  [/神(经|内|外)/, ['🧠']],
+  [/复健|康复|物理治疗/, ['💪']],
+  [/乳/, ['🎗️']],
+  [/胸腔|肺|呼吸/, ['🫁']],
+  [/甲状/, ['🦋']],
+  [/中医|针灸|推拿|国医|中药/, ['🌿']],
+  [/耳鼻|耳|鼻|喉/, ['👂']],
+  [/牙|口腔/, ['🦷']],
+  [/眼/, ['👁️']],
+  [/身心|精神|心理/, ['🧘','🧠']],
+  [/外科|手术/, ['🔪']],
+  [/胃|肠|消化/, ['🍽️']],
+  [/骨|关节/, ['🦴']],
+  [/皮/, ['🤲']],
+  [/心(脏|血管|内|外)/, ['🫀']],
+  [/泌尿|肾/, ['💧']],
+  [/内分泌|糖尿|代谢/, ['🧪']],
+  [/免疫|过敏|风湿/, ['🦠']],
+  [/麻醉/, ['💉']],
+  [/小儿|儿科|新生儿/, ['👶']],
+  [/感染|传染/, ['🦠']],
+  [/检验|检查|化验|放射|影像/, ['🧪']],
+  [/急诊|急救/, ['🚑']],
+  [/家医|家庭|全科/, ['🏠']],
+  [/睡眠/, ['💤']],
+  [/疼痛/, ['💢']],
+  [/营养/, ['🥗']],
+  [/血液|输血/, ['🩸']],
+];
+
+/**
+ * 按用户输入的名称推荐相关 emoji。
+ * @param {string} name 用户输入的名字
+ * @param {'pain'|'clinic'} kind 是身体问题还是科室
+ * @returns {string[]} 去重后的 emoji 列表（最多 10 个）
+ */
+function suggestEmojisForName(name, kind) {
+  const cleaned = String(name || '').trim();
+  if (!cleaned) return [];
+  const rules = kind === 'clinic' ? CLINIC_EMOJI_RULES : PAIN_EMOJI_RULES;
+  const hits = [];
+  for (const [re, emojis] of rules) {
+    if (re.test(cleaned)) {
+      for (const e of emojis) if (!hits.includes(e)) hits.push(e);
+    }
+  }
+  return hits.slice(0, 10);
+}
+
 /* =====================================================================
  * 1b · 每日寄语数据（庞大 + 可组合）
  * 逻辑在 loadState() 之后（需读取 state.customEncouragements）。
@@ -2094,16 +2208,41 @@ function renderDailyEdit(container, ctx) {
           <button type="button" class="btn-primary" id="confirmAddPain">添加</button>
           <button type="button" class="btn-ghost" id="cancelAddPain">取消</button>
         </div>
+        <div id="painEmojiSuggestWrap" class="hidden">
+          <div class="text-[11px] text-brand-700 font-semibold mb-1">推荐：</div>
+          <div class="flex flex-wrap gap-1" id="painEmojiSuggest"></div>
+        </div>
+        <div class="text-[11px] text-slate-400">更多选项</div>
         <div class="flex flex-wrap gap-1">
-          ${['🤕','😣','🥴','🤢','😪','🥶','🥵','💢','😖','😫','😩','🧠','🫀','🫁','🦴','🦵','🦶','🦾','👂','👁️','🦷','🤧','🩸','💤']
+          ${PAIN_EMOJI_PALETTE
             .map(e => `<button type="button" class="chip emoji-pick-pain" data-emoji="${e}">${e}</button>`).join('')}
         </div>
       `;
       painRows.appendChild(wrap);
-      wrap.querySelector('#newPainName').focus();
+      const painNameInput = wrap.querySelector('#newPainName');
+      const painEmojiInput = wrap.querySelector('#newPainEmoji');
+      const painSuggestWrap = wrap.querySelector('#painEmojiSuggestWrap');
+      const painSuggestList = wrap.querySelector('#painEmojiSuggest');
+      const refreshPainSuggest = () => {
+        const list = suggestEmojisForName(painNameInput.value, 'pain');
+        if (list.length === 0) {
+          painSuggestWrap.classList.add('hidden');
+          painSuggestList.innerHTML = '';
+          return;
+        }
+        painSuggestWrap.classList.remove('hidden');
+        painSuggestList.innerHTML = list
+          .map(e => `<button type="button" class="chip is-on emoji-pick-pain" data-emoji="${e}">${e}</button>`)
+          .join('');
+        painSuggestList.querySelectorAll('.emoji-pick-pain').forEach(b => {
+          b.addEventListener('click', () => { painEmojiInput.value = b.dataset.emoji; });
+        });
+      };
+      painNameInput.addEventListener('input', refreshPainSuggest);
+      painNameInput.focus();
       wrap.querySelectorAll('.emoji-pick-pain').forEach(b => {
         b.addEventListener('click', () => {
-          wrap.querySelector('#newPainEmoji').value = b.dataset.emoji;
+          painEmojiInput.value = b.dataset.emoji;
         });
       });
       wrap.querySelector('#cancelAddPain').addEventListener('click', () => wrap.remove());
@@ -2470,19 +2609,44 @@ function openVisitEditor(id) {
           <button type="button" class="btn-primary" id="confirmAddClinic">添加</button>
           <button type="button" class="btn-ghost" id="cancelAddClinic">取消</button>
         </div>
+        <div id="clinicEmojiSuggestWrap" class="hidden">
+          <div class="text-[11px] text-brand-700 font-semibold mb-1">推荐：</div>
+          <div class="flex flex-wrap gap-1" id="clinicEmojiSuggest"></div>
+        </div>
+        <div class="text-[11px] text-slate-400">更多选项</div>
         <div class="flex flex-wrap gap-1">
-          ${['🏥','🩺','💊','🧪','🦷','👁️','👂','🫀','🫁','🦴','🧠','🌿','🌸','🦋','🍽️','🔪','🤲','🧘','🦠','💉']
+          ${CLINIC_EMOJI_PALETTE
             .map(e => `<button type="button" class="chip emoji-pick" data-emoji="${e}">${e}</button>`).join('')}
         </div>
       `;
       // Insert after the clinic <select>
       const sel = document.getElementById('visitClinic');
       sel.parentElement.appendChild(wrap);
-      document.getElementById('newClinicName').focus();
+      const clinicNameInput = document.getElementById('newClinicName');
+      const clinicEmojiInput = document.getElementById('newClinicEmoji');
+      const clinicSuggestWrap = wrap.querySelector('#clinicEmojiSuggestWrap');
+      const clinicSuggestList = wrap.querySelector('#clinicEmojiSuggest');
+      const refreshClinicSuggest = () => {
+        const list = suggestEmojisForName(clinicNameInput.value, 'clinic');
+        if (list.length === 0) {
+          clinicSuggestWrap.classList.add('hidden');
+          clinicSuggestList.innerHTML = '';
+          return;
+        }
+        clinicSuggestWrap.classList.remove('hidden');
+        clinicSuggestList.innerHTML = list
+          .map(e => `<button type="button" class="chip is-on emoji-pick" data-emoji="${e}">${e}</button>`)
+          .join('');
+        clinicSuggestList.querySelectorAll('.emoji-pick').forEach(b => {
+          b.addEventListener('click', () => { clinicEmojiInput.value = b.dataset.emoji; });
+        });
+      };
+      clinicNameInput.addEventListener('input', refreshClinicSuggest);
+      clinicNameInput.focus();
 
       wrap.querySelectorAll('.emoji-pick').forEach(b => {
         b.addEventListener('click', () => {
-          document.getElementById('newClinicEmoji').value = b.dataset.emoji;
+          clinicEmojiInput.value = b.dataset.emoji;
         });
       });
       document.getElementById('cancelAddClinic').addEventListener('click', () => wrap.remove());
@@ -2519,46 +2683,103 @@ function openVisitEditor(id) {
  *   countUsage  - (key) => number, used to warn before deletion
  *   usageLabel  - e.g. '次看诊' / '天有该不适' / '天有该用药'
  *   itemKind    - '科室' / '身体问题' / '药物'
+ *   emojiKind   - 'pain' | 'clinic' | undefined  → 是否允许编辑 emoji + 推荐规则
+ *   getAll      - () => Array，返回该类型所有项（含内置 + 自定义），用于改名时校验唯一
+ *   defaultEmoji- 缺省 emoji（编辑表单中名称没有 emoji 字段时也会显示）
+ *
+ * 编辑设计：仅修改 label 与 emoji，保留 key 不变；因为历史记录里都是按 key 引用的，
+ * 所以"以前用过这个自定义"的所有数据（每日记录、看诊、理赔等）会自动跟着新名字显示。
  */
 function openCustomItemManager(opts) {
   const {
     title, builtinNum, collection, emptyHint,
-    countUsage, usageLabel, itemKind
+    countUsage, usageLabel, itemKind,
+    emojiKind, getAll, defaultEmoji
   } = opts;
+
+  const hasEmoji = !!emojiKind;
+  const fallbackEmoji = defaultEmoji || (emojiKind === 'pain' ? '🤕' : emojiKind === 'clinic' ? '🏥' : '💊');
 
   const buildBody = () => {
     const custom = state[collection] || [];
     return `
       <div class="space-y-3">
-        <div class="text-xs text-slate-500">系统已内置 ${builtinNum} 个${itemKind}。你可以在这里管理自己新增的项目。</div>
+        <div class="text-xs text-slate-500">系统已内置 ${builtinNum} 个${itemKind}。你可以在这里编辑或删除自己新增的项目，<br/>修改名称/emoji 后，历史记录里的显示会自动跟着更新。</div>
         ${custom.length === 0 ? `
           <div class="text-sm text-slate-400 text-center py-6 border-2 border-dashed border-slate-200 rounded-xl">
             还没有自定义${itemKind}<br/>
             <span class="text-xs">${emptyHint}</span>
           </div>
         ` : `
-          <div class="card divide-y divide-slate-100">
-            ${custom.map(c => `
-              <div class="p-3 flex items-center justify-between">
-                <div class="flex items-center gap-2">
-                  ${c.emoji ? `<span class="text-xl">${c.emoji}</span>` : '<span class="text-xl">💊</span>'}
-                  <span class="font-medium text-sm">${escapeHtml(c.label)}</span>
-                  <span class="text-xs text-slate-400">${countUsage(c.key)} ${usageLabel}</span>
-                </div>
-                <button class="btn-danger" data-del="${escapeHtml(c.key)}">删除</button>
-              </div>
-            `).join('')}
+          <div class="card divide-y divide-slate-100" id="customItemList">
+            ${custom.map(c => renderRow(c)).join('')}
           </div>
         `}
       </div>
     `;
   };
 
-  const attachDeleteHandlers = (panel) => {
-    panel.querySelectorAll('[data-del]').forEach((btn) => {
-      btn.addEventListener('click', () => {
-        const key = btn.dataset.del;
-        const item = (state[collection] || []).find((it) => it.key === key);
+  const renderRow = (c) => `
+    <div class="custom-item-row p-3" data-key="${escapeHtml(c.key)}">
+      <div class="flex items-center justify-between gap-2">
+        <div class="flex items-center gap-2 min-w-0">
+          ${hasEmoji ? `<span class="text-xl shrink-0">${c.emoji || fallbackEmoji}</span>` : `<span class="text-xl shrink-0">${fallbackEmoji}</span>`}
+          <div class="min-w-0">
+            <div class="font-medium text-sm truncate">${escapeHtml(c.label)}</div>
+            <div class="text-xs text-slate-400">${countUsage(c.key)} ${usageLabel}</div>
+          </div>
+        </div>
+        <div class="flex items-center gap-1 shrink-0">
+          <button class="btn-ghost text-xs px-2 py-1" data-edit="${escapeHtml(c.key)}">编辑</button>
+          <button class="btn-danger text-xs px-2 py-1" data-del="${escapeHtml(c.key)}">删除</button>
+        </div>
+      </div>
+    </div>
+  `;
+
+  const renderEditForm = (c) => {
+    const safeLabel = escapeHtml(c.label);
+    const safeEmoji = escapeHtml(c.emoji || fallbackEmoji);
+    return `
+      <div class="custom-item-row p-3 bg-brand-50 border-l-4 border-brand-300" data-key="${escapeHtml(c.key)}" data-editing="1">
+        <div class="space-y-2">
+          <div class="text-xs text-brand-700 font-semibold">编辑${itemKind}</div>
+          <input class="input edit-name" value="${safeLabel}" placeholder="名称" />
+          ${hasEmoji ? `
+            <div class="flex items-center gap-2">
+              <input class="input flex-1 edit-emoji" maxlength="4" value="${safeEmoji}" />
+              <button type="button" class="btn-primary edit-save">保存</button>
+              <button type="button" class="btn-ghost edit-cancel">取消</button>
+            </div>
+            <div class="edit-suggest-wrap hidden">
+              <div class="text-[11px] text-brand-700 font-semibold mb-1">推荐：</div>
+              <div class="flex flex-wrap gap-1 edit-suggest-list"></div>
+            </div>
+            <div class="text-[11px] text-slate-400">更多选项</div>
+            <div class="flex flex-wrap gap-1 edit-palette">
+              ${(emojiKind === 'clinic' ? CLINIC_EMOJI_PALETTE : PAIN_EMOJI_PALETTE)
+                .map(e => `<button type="button" class="chip edit-emoji-pick" data-emoji="${e}">${e}</button>`).join('')}
+            </div>
+          ` : `
+            <div class="flex items-center gap-2">
+              <button type="button" class="btn-primary edit-save">保存</button>
+              <button type="button" class="btn-ghost edit-cancel">取消</button>
+            </div>
+          `}
+        </div>
+      </div>
+    `;
+  };
+
+  const findItem = (key) => (state[collection] || []).find((it) => it.key === key);
+
+  // 给单一行绑定 编辑/删除 监听（仅一次），避免在重新渲染时反复给已有行追加重复监听
+  const bindRowActions = (rowEl) => {
+    const delBtn = rowEl.querySelector('[data-del]');
+    if (delBtn) {
+      delBtn.addEventListener('click', () => {
+        const key = delBtn.dataset.del;
+        const item = findItem(key);
         const nameEscaped = escapeHtml(item?.label || key);
         const used = countUsage(key);
         const bodyHtml =
@@ -2578,14 +2799,103 @@ function openCustomItemManager(opts) {
           },
         });
       });
+    }
+
+    const editBtn = rowEl.querySelector('[data-edit]');
+    if (editBtn) {
+      editBtn.addEventListener('click', () => {
+        const key = editBtn.dataset.edit;
+        const item = findItem(key);
+        if (!item) return;
+        if (rowEl.dataset.editing === '1') return;
+        const tmp = document.createElement('div');
+        tmp.innerHTML = renderEditForm(item);
+        const formEl = tmp.firstElementChild;
+        rowEl.replaceWith(formEl);
+        bindEditForm(formEl, item);
+      });
+    }
+  };
+
+  const attachAllRowHandlers = (panel) => {
+    panel.querySelectorAll('.custom-item-row').forEach(rowEl => bindRowActions(rowEl));
+  };
+
+  const bindEditForm = (formEl, item) => {
+    const nameInput = formEl.querySelector('.edit-name');
+    const emojiInput = formEl.querySelector('.edit-emoji');
+    const suggestWrap = formEl.querySelector('.edit-suggest-wrap');
+    const suggestList = formEl.querySelector('.edit-suggest-list');
+
+    const refreshSuggest = () => {
+      if (!hasEmoji || !suggestWrap) return;
+      const list = suggestEmojisForName(nameInput.value, emojiKind);
+      if (list.length === 0) {
+        suggestWrap.classList.add('hidden');
+        suggestList.innerHTML = '';
+        return;
+      }
+      suggestWrap.classList.remove('hidden');
+      suggestList.innerHTML = list
+        .map(e => `<button type="button" class="chip is-on edit-emoji-pick" data-emoji="${e}">${e}</button>`)
+        .join('');
+      suggestList.querySelectorAll('.edit-emoji-pick').forEach(b => {
+        b.addEventListener('click', () => { emojiInput.value = b.dataset.emoji; });
+      });
+    };
+
+    if (hasEmoji) {
+      nameInput.addEventListener('input', refreshSuggest);
+      refreshSuggest();
+      formEl.querySelectorAll('.edit-palette .edit-emoji-pick').forEach(b => {
+        b.addEventListener('click', () => { emojiInput.value = b.dataset.emoji; });
+      });
+    }
+
+    formEl.querySelector('.edit-cancel').addEventListener('click', () => {
+      const fresh = findItem(item.key);
+      if (!fresh) { openCustomItemManager(opts); return; }
+      const tmp = document.createElement('div');
+      tmp.innerHTML = renderRow(fresh);
+      const restored = tmp.firstElementChild;
+      formEl.replaceWith(restored);
+      bindRowActions(restored);
     });
+
+    formEl.querySelector('.edit-save').addEventListener('click', () => {
+      const newName = nameInput.value.trim();
+      const newEmoji = hasEmoji
+        ? ((emojiInput.value || '').trim() || fallbackEmoji)
+        : null;
+      if (!newName) { toast('请填写名称', 'error'); return; }
+      const all = typeof getAll === 'function' ? getAll() : (state[collection] || []);
+      const conflict = all.some(x => x.key !== item.key && (x.label === newName || x.key === newName));
+      if (conflict) { toast('该名称已存在', 'error'); return; }
+
+      const target = findItem(item.key);
+      if (!target) { openCustomItemManager(opts); return; }
+      target.label = newName;
+      if (hasEmoji) target.emoji = newEmoji;
+      saveState();
+      toast('已保存修改', 'success');
+
+      const tmp = document.createElement('div');
+      tmp.innerHTML = renderRow(target);
+      const updated = tmp.firstElementChild;
+      formEl.replaceWith(updated);
+      bindRowActions(updated);
+    });
+
+    if (nameInput) {
+      try { nameInput.focus(); nameInput.select(); } catch (_) { /* ok */ }
+    }
   };
 
   openModal(title, buildBody(), [
     { label: '完成', class: 'btn-primary', onClick: closeModal }
   ]);
   const body = document.querySelector('.modal-panel > div.overflow-y-auto');
-  if (body) attachDeleteHandlers(body);
+  if (body) attachAllRowHandlers(body);
 }
 
 function openClinicManager() {
@@ -2597,6 +2907,9 @@ function openClinicManager() {
     countUsage: (key) => state.visits.filter(v => v.clinic === key).length,
     usageLabel: '次看诊',
     itemKind:   '科室',
+    emojiKind:  'clinic',
+    getAll:     getAllClinics,
+    defaultEmoji: '🏥',
   });
 }
 
@@ -2609,6 +2922,9 @@ function openPainPartManager() {
     countUsage: (key) => state.daily.filter(d => (d.pains || {})[key] > 0).length,
     usageLabel: '天有该不适',
     itemKind:   '身体问题',
+    emojiKind:  'pain',
+    getAll:     getAllPainParts,
+    defaultEmoji: '🤕',
   });
 }
 
@@ -2621,6 +2937,8 @@ function openMedItemManager() {
     countUsage: (key) => state.daily.filter(d => (d.meds || {})[key]).length,
     usageLabel: '天有用药',
     itemKind:   '药物',
+    getAll:     getAllMedItems,
+    defaultEmoji: '💊',
   });
 }
 
@@ -2633,6 +2951,8 @@ function openInsurerManager() {
     countUsage: (key) => state.claims.filter(c => c.insurer === key).length,
     usageLabel: '单理赔',
     itemKind:   '保险公司',
+    getAll:     getAllInsurers,
+    defaultEmoji: '🏢',
   });
 }
 
